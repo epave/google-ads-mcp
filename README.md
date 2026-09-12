@@ -135,9 +135,12 @@ CI (`.github/workflows/ci.yml`) installs with uv, runs ruff + pytest, then `goog
 uv sync --extra dev
 uv run pytest
 uv run ruff check src tests
+uv run python scripts/smoke_mcp.py --stdio
 uv run google-ads-mcp-harness --max-rounds 3 --fix
 uv run google-ads-mcp-harness --all-open
 ```
+
+`scripts/smoke_mcp.py` talks to the server like Claude Code / Codex would: lists tools, previews a paused Search create, confirms writes stay blocked, and reads the DuckDB audit. It does **not** call the live Ads API. For that, add `google-ads.yaml` or the `GOOGLE_ADS_*` env vars and ask an agent to run `list_accessible_customers`.
 
 The harness fingerprints findings. It stops when the set is empty or unchanged. High-severity leftovers fail the build.
 

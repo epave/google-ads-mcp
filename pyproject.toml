@@ -24,6 +24,7 @@ dev = [
 google-ads-mcp = "google_ads_mcp.server:main"
 google-ads-mcp-auth = "google_ads_mcp.auth:main"
 google-ads-mcp-harness = "google_ads_mcp.harness:main"
+google-ads-mcp-smoke = "google_ads_mcp.smoke:main"
 
 [build-system]
 requires = ["hatchling"]
