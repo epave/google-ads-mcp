@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
-import urllib.request
+import ssl
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -22,11 +23,6 @@ ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 BLOCKED_NAMES = {"google-ads.yaml", ".env", "id_rsa", "id_ed25519"}
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        raise ValueError("Redirects are not allowed when fetching image assets")
-
-
 def _is_public_ip(ip: str) -> bool:
     address = ipaddress.ip_address(ip)
     return not (
@@ -39,24 +35,47 @@ def _is_public_ip(ip: str) -> bool:
     )
 
 
-def _assert_public_https(url: str) -> None:
+def _resolved_public_ip(host: str, port: int) -> str:
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    for info in infos:
+        ip = info[4][0]
+        if _is_public_ip(ip):
+            return ip
+    raise ValueError(f"Refusing to fetch non-public host {host}")
+
+
+def _assert_public_https(url: str) -> tuple[str, str, int, str]:
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError("Only https URLs are allowed for image assets")
     host = parsed.hostname
     if not host:
         raise ValueError("Invalid image URL")
-    infos = socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
-    for info in infos:
-        if not _is_public_ip(info[4][0]):
-            raise ValueError(f"Refusing to fetch non-public host {host}")
+    port = parsed.port or 443
+    ip = _resolved_public_ip(host, port)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return host, ip, port, path
 
 
 def _read_https(url: str) -> bytes:
-    _assert_public_https(url)
-    opener = urllib.request.build_opener(_NoRedirect)
-    with opener.open(url, timeout=30) as response:
+    host, ip, port, path = _assert_public_https(url)
+    context = ssl.create_default_context()
+    raw = socket.create_connection((ip, port), timeout=30)
+    ssock = context.wrap_socket(raw, server_hostname=host)
+    connection = http.client.HTTPSConnection(host, port=port, timeout=30, context=context)
+    connection.sock = ssock
+    try:
+        connection.request("GET", path, headers={"Host": host})
+        response = connection.getresponse()
+        if 300 <= response.status < 400:
+            raise ValueError("Redirects are not allowed when fetching image assets")
+        if response.status != 200:
+            raise ValueError(f"Image URL returned HTTP {response.status}")
         data = response.read(MAX_IMAGE_BYTES + 1)
+    finally:
+        connection.close()
     if len(data) > MAX_IMAGE_BYTES:
         raise ValueError(f"Image exceeds {MAX_IMAGE_BYTES} bytes")
     return data

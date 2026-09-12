@@ -67,6 +67,7 @@ class Settings(BaseSettings):
         else:
             path = default_state_dir() / "state.duckdb"
         path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.chmod(0o700)
         return path
 
     def resolved_asset_root(self) -> Path:

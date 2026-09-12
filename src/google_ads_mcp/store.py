@@ -56,7 +56,10 @@ class Store:
     def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.chmod(0o700)
         self._conn = duckdb.connect(str(self.path))
+        if self.path.exists():
+            self.path.chmod(0o600)
         self._init_schema()
 
     def _init_schema(self) -> None:
@@ -166,10 +169,17 @@ class Store:
                 "confirm_token does not match these arguments. Preview the mutation again "
                 "with the exact payload you want to apply."
             )
-        self._conn.execute(
-            "UPDATE preview_tokens SET used_at = ? WHERE token = ?",
+        claimed = self._conn.execute(
+            """
+            UPDATE preview_tokens
+            SET used_at = ?
+            WHERE token = ? AND used_at IS NULL
+            RETURNING token
+            """,
             [datetime.now(UTC).replace(tzinfo=None), token],
-        )
+        ).fetchone()
+        if claimed is None:
+            raise ValueError("confirm_token has already been used.")
         return stored_args
 
     def save_dashboard_snapshot(self, customer_id: str, payload: dict[str, Any]) -> str:
