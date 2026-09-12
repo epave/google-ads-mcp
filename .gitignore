@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local Google Ads credentials and MCP state
+google-ads.yaml
+*.duckdb
+*.duckdb.wal
+data/
+.google-ads-mcp/
