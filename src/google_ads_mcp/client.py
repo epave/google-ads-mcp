@@ -29,7 +29,7 @@ def _client_from_settings(settings: Settings) -> GoogleAdsClient:
         )
     if not (settings.client_id and settings.client_secret and settings.refresh_token):
         raise AdsError(
-            "Missing OAuth credentials. Run `google-ads-mcp-auth` or set "
+            "Missing OAuth credentials. Run `google-ads-mcp auth` or set "
             "GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET, and GOOGLE_ADS_REFRESH_TOKEN."
         )
 

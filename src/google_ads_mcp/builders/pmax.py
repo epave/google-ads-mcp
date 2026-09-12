@@ -155,3 +155,32 @@ def build_pmax_campaign(
             _link_asset_group_asset(client, asset_group.resource_name, dref, field.DESCRIPTION)
         )
     return operations
+
+
+def build_asset_group_text_ops(
+    client,
+    customer_id: str,
+    *,
+    asset_group_id: str,
+    headlines: list[str] | None = None,
+    descriptions: list[str] | None = None,
+) -> list[Any]:
+    """Add headline/description text assets to an existing asset group."""
+    headlines = headlines or []
+    descriptions = descriptions or []
+    if not headlines and not descriptions:
+        raise ValueError("Provide at least one headline or description.")
+    temps = TempIds()
+    service = client.get_service("AssetGroupService")
+    asset_group_name = service.asset_group_path(customer_id, asset_group_id)
+    field = client.enums.AssetFieldTypeEnum
+    operations: list[Any] = []
+    for headline in headlines:
+        hop, href = _text_asset_op(client, customer_id, headline, temps)
+        operations.append(hop)
+        operations.append(_link_asset_group_asset(client, asset_group_name, href, field.HEADLINE))
+    for description in descriptions:
+        dop, dref = _text_asset_op(client, customer_id, description, temps)
+        operations.append(dop)
+        operations.append(_link_asset_group_asset(client, asset_group_name, dref, field.DESCRIPTION))
+    return operations

@@ -16,6 +16,10 @@ def test_create_server_registers_core_tools() -> None:
         "create_display_campaign",
         "create_pmax_campaign",
         "upload_image_asset",
+        "update_responsive_search_ad",
+        "add_campaign_locations",
+        "add_campaign_languages",
+        "add_asset_group_text",
     }
     missing = expected - tools
     assert not missing, f"missing tools: {missing}"

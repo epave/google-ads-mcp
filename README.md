@@ -31,11 +31,13 @@ uv sync --extra dev
 One-time OAuth (writes `~/.google-ads-mcp/google-ads.yaml`):
 
 ```bash
-uv run google-ads-mcp-auth \
+uv run google-ads-mcp auth \
   --client-id "$GOOGLE_ADS_CLIENT_ID" \
   --client-secret "$GOOGLE_ADS_CLIENT_SECRET" \
   --developer-token "$GOOGLE_ADS_DEVELOPER_TOKEN"
 ```
+
+`google-ads-mcp-auth` and `uv run python scripts/auth.py` are the same helper.
 
 Or copy `.env.example` / `google-ads.yaml.example` and fill them in.
 
@@ -112,6 +114,9 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 - `create_display_campaign` — needs image assets (1.91:1 and 1:1)
 - `create_pmax_campaign` — standard Performance Max, not retail/Merchant Center
 - `upload_image_asset`, `create_ad_group`, `add_keywords`
+- `update_responsive_search_ad` — replace RSA headlines/descriptions
+- `add_campaign_locations` / `add_campaign_languages` — geo (e.g. `2840` US) and language (e.g. `1000` English)
+- `add_asset_group_text` — add headlines/descriptions to a PMax asset group
 
 Shopping, Demand Gen, Video, and App campaign *creation* are out of scope. Those types can still be listed, reported, paused, and enabled.
 

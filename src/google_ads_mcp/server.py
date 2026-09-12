@@ -37,6 +37,11 @@ def create_server() -> FastMCP:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        from google_ads_mcp.auth import main as auth_main
+
+        auth_main(sys.argv[2:])
+        return
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stderr,

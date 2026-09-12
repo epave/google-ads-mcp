@@ -7,7 +7,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from google_ads_mcp.builders.display import build_display_campaign
-from google_ads_mcp.builders.pmax import build_pmax_campaign
+from google_ads_mcp.builders.pmax import build_asset_group_text_ops, build_pmax_campaign
 from google_ads_mcp.builders.search import build_search_campaign
 from google_ads_mcp.client import get_client, run_ads_call
 from google_ads_mcp.ids import clean_customer_id
@@ -330,9 +330,195 @@ def create_ad_group(
     return {"status": "applied", "resource_name": resource_name}
 
 
+def update_responsive_search_ad(
+    customer_id: str,
+    ad_id: str,
+    headlines: list[str],
+    descriptions: list[str],
+    final_url: str | None = None,
+    path1: str | None = None,
+    path2: str | None = None,
+    dry_run: bool = True,
+    confirm_token: str | None = None,
+) -> dict[str, Any]:
+    """Replace headlines and descriptions on an existing responsive search ad.
+
+    Pass the full headline and description lists. Google Ads replaces the set.
+    """
+    from google.api_core import protobuf_helpers
+
+    cid = clean_customer_id(customer_id)
+    args = {
+        "ad_id": str(ad_id),
+        "headlines": headlines,
+        "descriptions": descriptions,
+        "final_url": final_url,
+        "path1": path1,
+        "path2": path2,
+    }
+    auth = _gate().authorize_write(
+        tool="update_responsive_search_ad",
+        customer_id=cid,
+        args=args,
+        description=f"Update RSA {ad_id} headlines/descriptions",
+        dry_run=dry_run,
+        confirm_token=confirm_token,
+    )
+    if auth.get("status") == "preview":
+        return auth
+    if len(headlines) < 3 or len(descriptions) < 2:
+        raise ValueError("RSA update requires at least 3 headlines and 2 descriptions.")
+    client = get_client()
+    service = client.get_service("AdService")
+    operation = client.get_type("AdOperation")
+    ad = operation.update
+    ad.resource_name = service.ad_path(cid, ad_id)
+    for text in headlines:
+        asset = client.get_type("AdTextAsset")
+        asset.text = text
+        ad.responsive_search_ad.headlines.append(asset)
+    for text in descriptions:
+        asset = client.get_type("AdTextAsset")
+        asset.text = text
+        ad.responsive_search_ad.descriptions.append(asset)
+    if final_url:
+        ad.final_urls.append(final_url)
+    if path1:
+        ad.responsive_search_ad.path1 = path1
+    if path2:
+        ad.responsive_search_ad.path2 = path2
+    client.copy_from(operation.update_mask, protobuf_helpers.field_mask(None, ad._pb))
+    response = run_ads_call(service.mutate_ads, customer_id=cid, operations=[operation])
+    get_store().record_audit(
+        tool="update_responsive_search_ad", action="apply", customer_id=cid, payload=args
+    )
+    return {"status": "applied", "resource_name": response.results[0].resource_name}
+
+
+def add_campaign_locations(
+    customer_id: str,
+    campaign_id: str,
+    geo_target_constant_ids: list[str],
+    dry_run: bool = True,
+    confirm_token: str | None = None,
+) -> dict[str, Any]:
+    """Add location targeting to a campaign using geo target constant IDs (e.g. 2840 for US)."""
+    cid = clean_customer_id(customer_id)
+    args = {"campaign_id": str(campaign_id), "geo_target_constant_ids": geo_target_constant_ids}
+    auth = _gate().authorize_write(
+        tool="add_campaign_locations",
+        customer_id=cid,
+        args=args,
+        description=f"Add {len(geo_target_constant_ids)} locations to campaign {campaign_id}",
+        dry_run=dry_run,
+        confirm_token=confirm_token,
+    )
+    if auth.get("status") == "preview":
+        return auth
+    client = get_client()
+    service = client.get_service("CampaignCriterionService")
+    campaign_service = client.get_service("CampaignService")
+    geo_service = client.get_service("GeoTargetConstantService")
+    operations = []
+    for geo_id in geo_target_constant_ids:
+        operation = client.get_type("CampaignCriterionOperation")
+        criterion = operation.create
+        criterion.campaign = campaign_service.campaign_path(cid, campaign_id)
+        criterion.location.geo_target_constant = geo_service.geo_target_constant_path(geo_id)
+        operations.append(operation)
+    response = run_ads_call(service.mutate_campaign_criteria, customer_id=cid, operations=operations)
+    names = [item.resource_name for item in response.results]
+    get_store().record_audit(
+        tool="add_campaign_locations", action="apply", customer_id=cid, payload=args
+    )
+    return {"status": "applied", "resource_names": names}
+
+
+def add_campaign_languages(
+    customer_id: str,
+    campaign_id: str,
+    language_constant_ids: list[str],
+    dry_run: bool = True,
+    confirm_token: str | None = None,
+) -> dict[str, Any]:
+    """Add language targeting to a campaign using language constant IDs (e.g. 1000 for English)."""
+    cid = clean_customer_id(customer_id)
+    args = {"campaign_id": str(campaign_id), "language_constant_ids": language_constant_ids}
+    auth = _gate().authorize_write(
+        tool="add_campaign_languages",
+        customer_id=cid,
+        args=args,
+        description=f"Add {len(language_constant_ids)} languages to campaign {campaign_id}",
+        dry_run=dry_run,
+        confirm_token=confirm_token,
+    )
+    if auth.get("status") == "preview":
+        return auth
+    client = get_client()
+    service = client.get_service("CampaignCriterionService")
+    campaign_service = client.get_service("CampaignService")
+    operations = []
+    for language_id in language_constant_ids:
+        operation = client.get_type("CampaignCriterionOperation")
+        criterion = operation.create
+        criterion.campaign = campaign_service.campaign_path(cid, campaign_id)
+        criterion.language.language_constant = f"languageConstants/{language_id}"
+        operations.append(operation)
+    response = run_ads_call(service.mutate_campaign_criteria, customer_id=cid, operations=operations)
+    names = [item.resource_name for item in response.results]
+    get_store().record_audit(
+        tool="add_campaign_languages", action="apply", customer_id=cid, payload=args
+    )
+    return {"status": "applied", "resource_names": names}
+
+
+def add_asset_group_text(
+    customer_id: str,
+    asset_group_id: str,
+    headlines: list[str] | None = None,
+    descriptions: list[str] | None = None,
+    dry_run: bool = True,
+    confirm_token: str | None = None,
+) -> dict[str, Any]:
+    """Add headline/description text assets to an existing Performance Max asset group."""
+    cid = clean_customer_id(customer_id)
+    args = {
+        "asset_group_id": str(asset_group_id),
+        "headlines": headlines or [],
+        "descriptions": descriptions or [],
+    }
+    auth = _gate().authorize_write(
+        tool="add_asset_group_text",
+        customer_id=cid,
+        args=args,
+        description=f"Add text assets to asset group {asset_group_id}",
+        dry_run=dry_run,
+        confirm_token=confirm_token,
+    )
+    if auth.get("status") == "preview":
+        return auth
+    client = get_client()
+    operations = build_asset_group_text_ops(
+        client,
+        cid,
+        asset_group_id=str(asset_group_id),
+        headlines=headlines,
+        descriptions=descriptions,
+    )
+    result = mutate(cid, operations, client=client)
+    get_store().record_audit(
+        tool="add_asset_group_text", action="apply", customer_id=cid, payload=args
+    )
+    return {"status": "applied", **result}
+
+
 def register(mcp: FastMCP) -> None:
     mcp.tool(create_search_campaign)
     mcp.tool(create_display_campaign)
     mcp.tool(create_pmax_campaign)
     mcp.tool(add_keywords)
     mcp.tool(create_ad_group)
+    mcp.tool(update_responsive_search_ad)
+    mcp.tool(add_campaign_locations)
+    mcp.tool(add_campaign_languages)
+    mcp.tool(add_asset_group_text)
