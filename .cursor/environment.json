@@ -1,0 +1,4 @@
+{
+  "name": "google-ads-mcp",
+  "install": "curl -LsSf https://astral.sh/uv/install.sh | sh && \"$HOME/.local/bin/uv\" sync --extra dev"
+}
