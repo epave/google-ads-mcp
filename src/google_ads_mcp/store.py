@@ -17,6 +17,10 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
+
+def canonical_args(args: dict[str, Any]) -> str:
+    return json.dumps(args, sort_keys=True, default=str, separators=(",", ":"))
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_events (
     id VARCHAR PRIMARY KEY,
@@ -122,7 +126,21 @@ class Store:
         )
         return token
 
-    def consume_preview(self, token: str, *, tool: str, customer_id: str | None) -> dict[str, Any]:
+    def _decode_args(self, args: Any) -> dict[str, Any]:
+        if isinstance(args, str):
+            return json.loads(args)
+        if hasattr(args, "as_py"):
+            return args.as_py()
+        return dict(args) if args else {}
+
+    def consume_preview(
+        self,
+        token: str,
+        *,
+        tool: str,
+        customer_id: str | None,
+        expected_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         row = self._conn.execute(
             """
             SELECT tool, customer_id, args, expires_at, used_at
@@ -142,15 +160,17 @@ class Store:
             raise ValueError(f"confirm_token was issued for {stored_tool}, not {tool}.")
         if stored_customer and customer_id and stored_customer != customer_id:
             raise ValueError("confirm_token customer_id does not match.")
+        stored_args = self._decode_args(args)
+        if expected_args is not None and canonical_args(stored_args) != canonical_args(expected_args):
+            raise ValueError(
+                "confirm_token does not match these arguments. Preview the mutation again "
+                "with the exact payload you want to apply."
+            )
         self._conn.execute(
             "UPDATE preview_tokens SET used_at = ? WHERE token = ?",
             [datetime.now(UTC).replace(tzinfo=None), token],
         )
-        if isinstance(args, str):
-            return json.loads(args)
-        if hasattr(args, "as_py"):
-            return args.as_py()
-        return dict(args) if args else {}
+        return stored_args
 
     def save_dashboard_snapshot(self, customer_id: str, payload: dict[str, Any]) -> str:
         snapshot_id = str(uuid4())

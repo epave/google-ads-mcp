@@ -61,6 +61,48 @@ def test_writes_disabled(tmp_path: Path) -> None:
         )
 
 
+def test_confirm_token_binds_args(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.duckdb")
+    gate = SafetyGate(_settings(write_enabled=True), store)
+    preview = gate.authorize_write(
+        tool="set_campaign_status",
+        customer_id="1234567890",
+        args={"campaign_id": "1", "status": "PAUSED"},
+        description="pause",
+        dry_run=True,
+    )
+    with pytest.raises((AdsError, ValueError)):
+        gate.authorize_write(
+            tool="set_campaign_status",
+            customer_id="1234567890",
+            args={"campaign_id": "2", "status": "ENABLED"},
+            description="enable other",
+            dry_run=False,
+            confirm_token=preview["confirm_token"],
+        )
+
+
+def test_confirm_token_rejected_on_dry_run(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.duckdb")
+    gate = SafetyGate(_settings(write_enabled=True), store)
+    preview = gate.authorize_write(
+        tool="set_campaign_status",
+        customer_id="1234567890",
+        args={"status": "PAUSED"},
+        description="pause",
+        dry_run=True,
+    )
+    with pytest.raises(AdsError, match="dry_run=false"):
+        gate.authorize_write(
+            tool="set_campaign_status",
+            customer_id="1234567890",
+            args={"status": "PAUSED"},
+            description="pause",
+            dry_run=True,
+            confirm_token=preview["confirm_token"],
+        )
+
+
 def test_budget_cap(tmp_path: Path) -> None:
     gate = SafetyGate(_settings(), Store(tmp_path / "db.duckdb"))
     with pytest.raises(AdsError):

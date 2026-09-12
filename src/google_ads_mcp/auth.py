@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> None:
         f"login_customer_id: {args.login_customer_id}" if args.login_customer_id else ""
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.parent.chmod(0o700)
     args.output.write_text(
         YAML_TEMPLATE.format(
             developer_token=args.developer_token,
@@ -62,7 +63,8 @@ def main(argv: list[str] | None = None) -> None:
         ),
         encoding="utf-8",
     )
-    print(f"Wrote {args.output}")
+    args.output.chmod(0o600)
+    print(f"Wrote {args.output} (mode 0600)")
     print("Point GOOGLE_ADS_CONFIGURATION_FILE_PATH at this file, or copy it to ./google-ads.yaml")
 
 

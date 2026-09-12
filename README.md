@@ -122,12 +122,18 @@ Shopping, Demand Gen, Video, and App campaign *creation* are out of scope. Those
 - Pause campaign 111 unless it is already paused
 - Create a paused Search campaign named "Spring shoes" with $25/day, these headlines, and these keywords
 
-## Development
+## Build harness
+
+CI (`.github/workflows/ci.yml`) installs with uv, runs ruff + pytest, then `google-ads-mcp-harness` until findings converge (max 3 rounds). A scheduled/manual workflow reviews every open PR.
 
 ```bash
 uv sync --extra dev
 uv run pytest
 uv run ruff check src tests
+uv run google-ads-mcp-harness --max-rounds 3 --fix
+uv run google-ads-mcp-harness --all-open
 ```
+
+The harness fingerprints findings. It stops when the set is empty or unchanged. High-severity leftovers fail the build.
 
 Live API calls are not run in CI. Use a Google Ads test account for end-to-end writes.

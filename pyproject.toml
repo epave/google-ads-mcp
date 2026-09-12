@@ -23,6 +23,7 @@ dev = [
 [project.scripts]
 google-ads-mcp = "google_ads_mcp.server:main"
 google-ads-mcp-auth = "google_ads_mcp.auth:main"
+google-ads-mcp-harness = "google_ads_mcp.harness:main"
 
 [build-system]
 requires = ["hatchling"]

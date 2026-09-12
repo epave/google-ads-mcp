@@ -42,7 +42,12 @@ class SafetyGate:
         confirm_token: str | None = None,
     ) -> dict[str, Any]:
         cid = self.assert_customer_allowed(customer_id)
-        if dry_run and not confirm_token:
+        if confirm_token and dry_run:
+            raise AdsError(
+                "confirm_token applies a write. Re-call with the same arguments, "
+                "dry_run=false, and the confirm_token."
+            )
+        if dry_run:
             token = self.store.create_preview(
                 tool=tool,
                 customer_id=cid,
@@ -62,8 +67,9 @@ class SafetyGate:
                 "confirm_token": token,
                 "expires_in_seconds": self.settings.preview_ttl_seconds,
                 "description": description,
+                "args": args,
                 "next_step": (
-                    f"Re-call {tool} with the same arguments and confirm_token to apply. "
+                    f"Re-call {tool} with the same arguments, dry_run=false, and confirm_token. "
                     "Set GOOGLE_ADS_SKIP_CONFIRM=true to skip this step."
                 ),
             }
@@ -73,9 +79,18 @@ class SafetyGate:
             if not confirm_token:
                 raise AdsError(
                     "Missing confirm_token. Call again with dry_run=true, then pass "
-                    "the returned confirm_token. Or set GOOGLE_ADS_SKIP_CONFIRM=true."
+                    "the returned confirm_token with dry_run=false. "
+                    "Or set GOOGLE_ADS_SKIP_CONFIRM=true."
                 )
-            self.store.consume_preview(confirm_token, tool=tool, customer_id=cid)
+            try:
+                self.store.consume_preview(
+                    confirm_token,
+                    tool=tool,
+                    customer_id=cid,
+                    expected_args=args,
+                )
+            except ValueError as exc:
+                raise AdsError(str(exc)) from exc
         return {"status": "authorized", "customer_id": cid}
 
     def assert_budget_increase_ok(self, current_amount: float, new_amount: float, force: bool) -> None:

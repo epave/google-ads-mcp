@@ -223,3 +223,5 @@ google-ads.yaml
 *.duckdb.wal
 data/
 .google-ads-mcp/
+harness-report.json
+harness-open-prs.json

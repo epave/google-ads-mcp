@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     budget_increase_cap: float = Field(default=0.20, validation_alias="GOOGLE_ADS_BUDGET_INCREASE_CAP")
     db_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_MCP_DB")
     preview_ttl_seconds: int = Field(default=15 * 60, validation_alias="GOOGLE_ADS_PREVIEW_TTL_SECONDS")
+    asset_root: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_ASSET_ROOT")
 
     def allowlist(self) -> set[str] | None:
         if not self.allowed_customer_ids:
@@ -44,7 +45,11 @@ class Settings(BaseSettings):
         return {clean_customer_id(item) for item in self.allowed_customer_ids.split(",") if item.strip()}
 
     def resolved_yaml_path(self) -> Path | None:
-        if self.yaml_path and self.yaml_path.exists():
+        if self.yaml_path is not None:
+            if not self.yaml_path.exists():
+                raise FileNotFoundError(
+                    f"GOOGLE_ADS_CONFIGURATION_FILE_PATH={self.yaml_path} does not exist"
+                )
             return self.yaml_path
         candidates = [
             Path.cwd() / "google-ads.yaml",
@@ -63,6 +68,12 @@ class Settings(BaseSettings):
             path = default_state_dir() / "state.duckdb"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def resolved_asset_root(self) -> Path:
+        root = (self.asset_root or Path.cwd()).expanduser().resolve()
+        if not root.exists():
+            raise FileNotFoundError(f"GOOGLE_ADS_ASSET_ROOT={root} does not exist")
+        return root
 
 
 def load_settings() -> Settings:
