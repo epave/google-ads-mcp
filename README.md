@@ -41,9 +41,11 @@ uv run google-ads-mcp auth \
 
 Or copy `.env.example` / `google-ads.yaml.example` and fill them in.
 
+You can also drop an ADC JSON file at `~/.config/google-ads-mcp/adc.json` (or set `GOOGLE_ADS_ADC_PATH`). Include `developer_token` plus either installed-app OAuth fields (`client_id`, `client_secret`, `refresh_token`) or a standard `authorized_user` / `service_account` ADC object.
+
 ## Connect an agent host
 
-All hosts should launch via stdio with `uv run`. Point `GOOGLE_ADS_CONFIGURATION_FILE_PATH` at your yaml, or set the `GOOGLE_ADS_*` env vars.
+All hosts should launch via stdio with `uv run`. Point `GOOGLE_ADS_CONFIGURATION_FILE_PATH` at your yaml, `GOOGLE_ADS_ADC_PATH` at `adc.json`, or set the `GOOGLE_ADS_*` env vars.
 
 ### Claude Code
 

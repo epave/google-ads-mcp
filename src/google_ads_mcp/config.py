@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,6 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def default_state_dir() -> Path:
     return Path.home() / ".google-ads-mcp"
+
+
+def default_xdg_config_dir() -> Path:
+    return Path.home() / ".config" / "google-ads-mcp"
 
 
 class Settings(BaseSettings):
@@ -27,6 +33,7 @@ class Settings(BaseSettings):
     refresh_token: str | None = Field(default=None, validation_alias="GOOGLE_ADS_REFRESH_TOKEN")
     login_customer_id: str | None = Field(default=None, validation_alias="GOOGLE_ADS_LOGIN_CUSTOMER_ID")
     yaml_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_CONFIGURATION_FILE_PATH")
+    adc_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_ADC_PATH")
     write_enabled: bool = Field(default=False, validation_alias="GOOGLE_ADS_WRITE_ENABLED")
     skip_confirm: bool = Field(default=False, validation_alias="GOOGLE_ADS_SKIP_CONFIRM")
     allowed_customer_ids: str | None = Field(
@@ -54,12 +61,37 @@ class Settings(BaseSettings):
         candidates = [
             Path.cwd() / "google-ads.yaml",
             Path.home() / "google-ads.yaml",
+            default_xdg_config_dir() / "google-ads.yaml",
             default_state_dir() / "google-ads.yaml",
         ]
         for path in candidates:
             if path.exists():
                 return path
         return None
+
+    def resolved_adc_path(self) -> Path | None:
+        if self.adc_path is not None:
+            if not self.adc_path.exists():
+                raise FileNotFoundError(f"GOOGLE_ADS_ADC_PATH={self.adc_path} does not exist")
+            return self.adc_path
+        candidates = [
+            Path.cwd() / "adc.json",
+            default_xdg_config_dir() / "adc.json",
+            default_state_dir() / "adc.json",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
+
+    def load_adc(self) -> dict[str, Any] | None:
+        path = self.resolved_adc_path()
+        if path is None:
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+        return data
 
     def resolved_db_path(self) -> Path:
         if self.db_path:
