@@ -15,8 +15,16 @@ def test_resolved_adc_path(tmp_path: Path) -> None:
     assert settings.load_adc()["developer_token"] == "tok"
 
 
-def test_adc_maps_authorized_user_fields() -> None:
-    settings = Settings.model_validate({})
+def test_adc_maps_authorized_user_fields(monkeypatch) -> None:
+    for key in (
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "GOOGLE_ADS_CLIENT_ID",
+        "GOOGLE_ADS_CLIENT_SECRET",
+        "GOOGLE_ADS_REFRESH_TOKEN",
+        "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings(_env_file=None)
     config = client_config_from_adc(
         {
             "type": "authorized_user",
@@ -34,8 +42,16 @@ def test_adc_maps_authorized_user_fields() -> None:
     assert config["use_proto_plus"] is True
 
 
-def test_adc_requires_developer_token() -> None:
-    settings = Settings.model_validate({})
+def test_adc_requires_developer_token(monkeypatch) -> None:
+    for key in (
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "GOOGLE_ADS_CLIENT_ID",
+        "GOOGLE_ADS_CLIENT_SECRET",
+        "GOOGLE_ADS_REFRESH_TOKEN",
+        "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings(_env_file=None)
     with pytest.raises(AdsError, match="developer_token"):
         client_config_from_adc(
             {

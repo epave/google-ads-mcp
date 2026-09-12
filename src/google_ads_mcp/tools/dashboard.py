@@ -40,6 +40,27 @@ def get_campaign_dashboard(
     This is an MCP tool, not a web UI.
     """
     cid = clean_customer_id(customer_id)
+    account = search(
+        cid,
+        "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1",
+    )
+    if account and account[0].get("customer.manager"):
+        name = account[0].get("customer.descriptive_name") or cid
+        return {
+            "customer_id": cid,
+            "manager": True,
+            "name": name,
+            "campaign_count": 0,
+            "totals": {"spend_today": 0, "spend_7d": 0, "clicks_7d": 0, "conversions_7d": 0},
+            "alerts": [
+                f"{name} is a manager (MCC) account. Call get_campaign_dashboard on a client customer_id."
+            ],
+            "campaigns": [],
+            "markdown": (
+                f"{name} is a manager account — Google Ads will not return campaign metrics here. "
+                "Use list_accessible_customers and dashboard a non-manager customer."
+            ),
+        }
     status_filter = "campaign.status IN ('ENABLED', 'PAUSED')" if include_paused else "campaign.status = 'ENABLED'"
     catalog = search(
         cid,

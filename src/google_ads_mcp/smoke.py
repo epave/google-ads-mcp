@@ -145,11 +145,26 @@ async def run_session(client: Client) -> dict[str, Any]:
     return report
 
 
+def _isolate_ads_env() -> None:
+    for key in (
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "GOOGLE_ADS_CLIENT_ID",
+        "GOOGLE_ADS_CLIENT_SECRET",
+        "GOOGLE_ADS_REFRESH_TOKEN",
+        "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+        "GOOGLE_ADS_CONFIGURATION_FILE_PATH",
+        "GOOGLE_ADS_ADC_PATH",
+        "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
+    ):
+        os.environ.pop(key, None)
+
+
 async def smoke_inprocess(db_path: Path) -> dict[str, Any]:
     reset_store_for_tests()
+    _isolate_ads_env()
+    os.environ["GOOGLE_ADS_DISABLE_ENV_FILE"] = "1"
     os.environ["GOOGLE_ADS_MCP_DB"] = str(db_path)
     os.environ["GOOGLE_ADS_WRITE_ENABLED"] = "false"
-    os.environ.pop("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", None)
     async with Client(create_server()) as client:
         report = await run_session(client)
     report["transport"] = "inprocess"
@@ -161,8 +176,19 @@ async def smoke_stdio(db_path: Path) -> dict[str, Any]:
         **os.environ,
         "GOOGLE_ADS_MCP_DB": str(db_path),
         "GOOGLE_ADS_WRITE_ENABLED": "false",
+        "GOOGLE_ADS_DISABLE_ENV_FILE": "1",
     }
-    env.pop("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", None)
+    for key in (
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "GOOGLE_ADS_CLIENT_ID",
+        "GOOGLE_ADS_CLIENT_SECRET",
+        "GOOGLE_ADS_REFRESH_TOKEN",
+        "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
+        "GOOGLE_ADS_CONFIGURATION_FILE_PATH",
+        "GOOGLE_ADS_ADC_PATH",
+        "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
+    ):
+        env.pop(key, None)
     transport = StdioTransport(
         command="uv",
         args=["run", "--directory", str(Path.cwd()), "google-ads-mcp"],

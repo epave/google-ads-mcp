@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ def default_xdg_config_dir() -> Path:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="",
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -110,4 +111,9 @@ class Settings(BaseSettings):
 
 
 def load_settings() -> Settings:
-    return Settings()
+    if os.environ.get("GOOGLE_ADS_DISABLE_ENV_FILE") == "1":
+        return Settings(_env_file=None)
+    env_path = Path(".env")
+    if env_path.exists():
+        return Settings(_env_file=env_path)
+    return Settings(_env_file=None)
