@@ -28,7 +28,19 @@ DuckDB 2.0 is not stable yet (GA targeted late October 2026). This project insta
 uv sync --extra dev
 ```
 
-One-time OAuth (writes `~/.google-ads-mcp/google-ads.yaml`):
+Copy `.env.example` to `.env` in this repo (gitignored) and fill in:
+
+```bash
+GOOGLE_ADS_DEVELOPER_TOKEN=...
+GOOGLE_ADS_CLIENT_ID=...
+GOOGLE_ADS_CLIENT_SECRET=...
+GOOGLE_ADS_REFRESH_TOKEN=...
+# Only if you access client accounts through an MCC:
+# GOOGLE_ADS_LOGIN_CUSTOMER_ID=0000000000
+GOOGLE_ADS_WRITE_ENABLED=false
+```
+
+One-time OAuth if you do not already have a refresh token (writes `~/.google-ads-mcp/google-ads.yaml`):
 
 ```bash
 uv run google-ads-mcp auth \
@@ -39,19 +51,15 @@ uv run google-ads-mcp auth \
 
 `google-ads-mcp-auth` and `uv run python scripts/auth.py` are the same helper.
 
-Or copy `.env.example` / `google-ads.yaml.example` and fill them in.
-
 You can also drop an ADC JSON file at `~/.config/google-ads-mcp/adc.json` (or set `GOOGLE_ADS_ADC_PATH`). Include `developer_token` plus either installed-app OAuth fields (`client_id`, `client_secret`, `refresh_token`) or a standard `authorized_user` / `service_account` ADC object.
+
+Load order: `google-ads.yaml` (if present) → `adc.json` → `GOOGLE_ADS_*` / `.env`.
 
 ## Connect an agent host
 
-All hosts should launch via stdio with `uv run`. Point `GOOGLE_ADS_CONFIGURATION_FILE_PATH` at your yaml, `GOOGLE_ADS_ADC_PATH` at `adc.json`, or set the `GOOGLE_ADS_*` env vars.
+All hosts launch the server over **stdio**. Set `cwd` (or `--directory`) to this repo so `.env` is found. Restart the host after editing config.
 
-### Claude Code
-
-```bash
-claude mcp add google-ads -- uv run --directory /ABS/PATH/TO/google-ads-mcp google-ads-mcp
-```
+Replace `/ABS/PATH/TO/google-ads-mcp` with the clone path (example: `/Users/you/personal/google-ads-mcp`).
 
 ### Codex
 
@@ -61,11 +69,31 @@ In `~/.codex/config.toml`:
 [mcp_servers.google-ads]
 command = "uv"
 args = ["run", "--directory", "/ABS/PATH/TO/google-ads-mcp", "google-ads-mcp"]
+cwd = "/ABS/PATH/TO/google-ads-mcp"
+```
+
+`cwd` is required for `.env`. Restart Codex, then:
+
+```bash
+codex mcp list
+```
+
+You should see `google-ads`. Optional: require a click-to-run on specific tools:
+
+```toml
+[mcp_servers.google-ads.tools.get_campaign_dashboard]
+approval_mode = "approve"
+```
+
+### Claude Code
+
+```bash
+claude mcp add google-ads -- uv run --directory /ABS/PATH/TO/google-ads-mcp google-ads-mcp
 ```
 
 ### Cursor
 
-`.cursor/mcp.json`:
+`.cursor/mcp.json` in the project (or your user MCP config):
 
 ```json
 {
@@ -87,8 +115,9 @@ args = ["run", "--directory", "/ABS/PATH/TO/google-ads-mcp", "google-ads-mcp"]
 | Customer allowlist | none | `GOOGLE_ADS_ALLOWED_CUSTOMER_IDS=123,456` |
 | Budget increase cap | 20% | `GOOGLE_ADS_BUDGET_INCREASE_CAP=0.20` (`force=true` to override) |
 | Local store | `~/.google-ads-mcp/state.duckdb` | `GOOGLE_ADS_MCP_DB` |
+| Image uploads | cwd | `GOOGLE_ADS_ASSET_ROOT` |
 
-Typical write: call the tool with `dry_run=true` → inspect the preview → call again with `confirm_token`. Then `set_campaign_status(..., status="ENABLED")` when you are ready to spend.
+Typical write: call the tool with `dry_run=true` → inspect the preview → call again with the same arguments, `dry_run=false`, and `confirm_token`. Creates stay **PAUSED**; enabling is a second call to `set_campaign_status`.
 
 ## Tools
 
@@ -122,19 +151,253 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 
 Shopping, Demand Gen, Video, and App campaign *creation* are out of scope. Those types can still be listed, reported, paused, and enabled.
 
-## Sample prompts
+## Practical examples
 
-- What customers can I access?
-- Show the dashboard for running campaigns on account 1234567890
-- Pause campaign 111 unless it is already paused
-- Create a paused Search campaign named "Spring shoes" with $25/day, these headlines, and these keywords
+IDs below are placeholders. Start every session with `list_accessible_customers` and copy a **non-manager** `customer_id`. Manager (MCC) accounts cannot return campaign metrics.
+
+### 1. See the dashboard (no web UI)
+
+Chat:
+
+```text
+List the Google Ads accounts I can access.
+Then show the campaign dashboard for <customer_id>, including paused campaigns.
+```
+
+What the agent should call:
+
+```text
+list_accessible_customers()
+get_campaign_dashboard(customer_id="1234567890", include_paused=true)
+```
+
+Example payload (markdown is in `markdown`):
+
+```text
+| Campaign | Type | Status | Budget/day | Spend today | Spend 7d | Clicks 7d | Conv 7d | CPA 7d |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| Campaign #1 | PERFORMANCE_MAX | ENABLED | 100.00 | 0.00 | 86.66 | 33 | 0.0 | — |
+```
+
+Alerts look like `LIMITED`, `BIDDING_STRATEGY_LEARNING`, or policy limits on asset groups. Call the same tool again later to get spend deltas vs the last local snapshot.
+
+Same thing from a terminal (no chat host):
+
+```bash
+uv run python -c "
+import asyncio
+from google_ads_mcp.server import create_server
+from fastmcp import Client
+
+async def main():
+    async with Client(create_server()) as c:
+        r = await c.call_tool('get_campaign_dashboard', {
+            'customer_id': '1234567890',
+            'include_paused': True,
+        })
+        print(r.structured_content['markdown'])
+
+asyncio.run(main())
+"
+```
+
+### 2. Inspect one campaign
+
+```text
+List all campaigns on <customer_id>, then get details and last-7-day metrics for campaign <campaign_id>.
+```
+
+```text
+list_campaigns(customer_id="1234567890", status="ALL", limit=20)
+get_campaign(customer_id="1234567890", campaign_id="111")
+list_ad_groups(customer_id="1234567890", campaign_id="111")
+get_search_terms(customer_id="1234567890", campaign_id="111", limit=25)
+get_recommendations(customer_id="1234567890")
+```
+
+### 3. Pause or resume (two-step write)
+
+Set `GOOGLE_ADS_WRITE_ENABLED=true` in `.env` first. Leave confirm tokens on.
+
+Chat:
+
+```text
+Pause campaign 111 on account 1234567890 if it is ENABLED.
+Preview first, show me the confirm_token, then apply only after I say go.
+```
+
+Tool sequence:
+
+```text
+# 1) preview
+set_campaign_status(
+  customer_id="1234567890",
+  campaign_id="111",
+  status="PAUSED",
+  dry_run=true,
+)
+# → { "status": "preview", "confirm_token": "...", "description": "Set campaign 111 to PAUSED" }
+
+# 2) apply (same arguments + token)
+set_campaign_status(
+  customer_id="1234567890",
+  campaign_id="111",
+  status="PAUSED",
+  dry_run=false,
+  confirm_token="<token from step 1>",
+)
+# → { "status": "applied", "campaign_status": "PAUSED" }
+
+# 3) verify
+get_campaign(customer_id="1234567890", campaign_id="111")
+```
+
+Resume the same way with `status="ENABLED"`. Do not pass `confirm_token` on a `dry_run=true` call.
+
+### 4. Change budget
+
+Amounts are in account currency, not micros. A raise of more than 20% needs `force=true`.
+
+```text
+update_campaign_budget(
+  customer_id="1234567890",
+  campaign_id="111",
+  daily_budget=120,
+  dry_run=true,
+)
+```
+
+### 5. Raw GAQL
+
+```text
+search(
+  customer_id="1234567890",
+  resource="campaign",
+  fields=["campaign.id", "campaign.name", "campaign.status", "metrics.clicks", "metrics.cost_micros"],
+  conditions=["campaign.status = 'ENABLED'", "segments.date DURING LAST_7_DAYS"],
+  orderings=["metrics.clicks DESC"],
+  limit=10,
+)
+```
+
+If you are unsure of field names:
+
+```text
+get_resource_metadata(resource="campaign")
+```
+
+### 6. Create a paused Search campaign
+
+Needs ≥3 headlines (≤30 chars) and ≥2 descriptions (≤90 chars). Always created **PAUSED**.
+
+```text
+Create a paused Search campaign on 1234567890 named "Spring shoes", $25/day,
+final URL https://example.com, headlines ["Buy shoes","Spring sale","Free shipping"],
+descriptions ["Shop the new drop.","Limited time offer."], keywords ["running shoes"].
+Preview, then apply when I confirm. Do not enable it.
+```
+
+```text
+create_search_campaign(
+  customer_id="1234567890",
+  name="Spring shoes",
+  daily_budget=25,
+  final_url="https://example.com",
+  headlines=["Buy shoes", "Spring sale", "Free shipping"],
+  descriptions=["Shop the new drop.", "Limited time offer."],
+  keywords=["running shoes"],
+  dry_run=true,
+)
+```
+
+After apply, enable only with an explicit `set_campaign_status(..., status="ENABLED")`.
+
+Optional follow-ups:
+
+```text
+add_campaign_locations(customer_id="1234567890", campaign_id="111", geo_target_constant_ids=["2840"])
+add_campaign_languages(customer_id="1234567890", campaign_id="111", language_constant_ids=["1000"])
+add_keywords(customer_id="1234567890", ad_group_id="222", keywords=["trail running shoes"], match_type="PHRASE")
+update_responsive_search_ad(
+  customer_id="1234567890",
+  ad_id="333",
+  headlines=["Buy shoes", "Spring sale", "Free shipping"],
+  descriptions=["Shop the new drop.", "Limited time offer."],
+)
+```
+
+### 7. Display or Performance Max (images first)
+
+Put files under `GOOGLE_ADS_ASSET_ROOT` (defaults to the process cwd, i.e. this repo if you set `cwd` correctly).
+
+Required sizes:
+
+- Display RDA: landscape **600×314** (1.91:1) and square **300×300**
+- PMax: logo + landscape marketing image + square marketing image
+
+```text
+upload_image_asset(customer_id="1234567890", name="hero-landscape", source="./assets/hero-600x314.png")
+upload_image_asset(customer_id="1234567890", name="hero-square", source="./assets/hero-300x300.png")
+upload_image_asset(customer_id="1234567890", name="logo", source="./assets/logo.png")
+```
+
+HTTPS URLs are allowed if they are public, non-redirecting, and under 10MB. Then:
+
+```text
+create_display_campaign(
+  customer_id="1234567890",
+  name="Display spring",
+  daily_budget=20,
+  final_url="https://example.com",
+  business_name="Acme",
+  headlines=["Spring sale"],
+  long_headline="New drop with free shipping",
+  descriptions=["Shop the collection."],
+  marketing_image_asset="customers/1234567890/assets/AAA",
+  square_marketing_image_asset="customers/1234567890/assets/BBB",
+)
+
+create_pmax_campaign(
+  customer_id="1234567890",
+  name="PMax spring",
+  daily_budget=30,
+  final_url="https://example.com",
+  business_name="Acme",
+  headlines=["H1", "H2", "H3"],
+  long_headline="Long headline here",
+  descriptions=["D1", "D2"],
+  logo_asset="customers/1234567890/assets/CCC",
+  marketing_image_asset="customers/1234567890/assets/AAA",
+  square_marketing_image_asset="customers/1234567890/assets/BBB",
+)
+```
+
+Retail / Merchant Center PMax is out of v1.
+
+### 8. MCC vs client accounts
+
+`list_accessible_customers` may return both a manager and a client. Dashboards and metrics must use the **client** id. On an MCC you will get a message to pick a non-manager customer instead of a metrics API error.
+
+If client-account calls fail with “login-customer-id must be set”, add the MCC id to `.env`:
+
+```bash
+GOOGLE_ADS_LOGIN_CUSTOMER_ID=0000000000
+```
+
+### 9. See what the agent already mutated
+
+```text
+get_local_audit(limit=20)
+```
+
+That reads the local DuckDB log (previews and applies), not live Google Ads change history. Use `get_change_events` for the API change stream.
 
 ## Build harness
 
 CI (`.github/workflows/ci.yml`) installs with uv, runs ruff + pytest, then `google-ads-mcp-harness` until findings converge (max 3 rounds). A scheduled/manual workflow reviews every open PR.
 
 ```bash
-uv sync --extra dev
+uv sync --extra dev --prerelease=allow
 uv run pytest
 uv run ruff check src tests
 uv run python scripts/smoke_mcp.py --stdio
@@ -142,7 +405,7 @@ uv run google-ads-mcp-harness --max-rounds 3 --fix
 uv run google-ads-mcp-harness --all-open
 ```
 
-`scripts/smoke_mcp.py` talks to the server like Claude Code / Codex would: lists tools, previews a paused Search create, confirms writes stay blocked, and reads the DuckDB audit. It does **not** call the live Ads API. For that, add `google-ads.yaml` or the `GOOGLE_ADS_*` env vars and ask an agent to run `list_accessible_customers`.
+`scripts/smoke_mcp.py` talks to the server like Claude Code / Codex would: lists tools, previews a paused Search create, confirms writes stay blocked, and reads the DuckDB audit. It does **not** call the live Ads API.
 
 The harness fingerprints findings. It stops when the set is empty or unchanged. High-severity leftovers fail the build.
 
