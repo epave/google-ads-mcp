@@ -9,6 +9,7 @@ from google_ads_mcp.builders.common import (
     budget_operation,
     default_dates,
     set_eu_political_flag,
+    validate_pmax_copy,
 )
 from google_ads_mcp.mutate import TempIds
 
@@ -60,10 +61,7 @@ def build_pmax_campaign(
     brand_guidelines_enabled: bool = True,
     contains_eu_political: bool = False,
 ) -> list[Any]:
-    if len(headlines) < 3:
-        raise ValueError("Performance Max requires at least 3 headlines.")
-    if len(descriptions) < 2:
-        raise ValueError("Performance Max requires at least 2 descriptions.")
+    validate_pmax_copy(headlines, descriptions, long_headline, business_name)
 
     temps = TempIds()
     operations: list[Any] = []

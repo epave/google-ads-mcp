@@ -19,6 +19,7 @@ def search(
     conditions: list[str] | None = None,
     orderings: list[str] | None = None,
     limit: int | None = 100,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Run a Google Ads Query Language (GAQL) search.
 
@@ -35,17 +36,19 @@ def search(
         orderings=orderings or [],
         limit=limit,
     )
-    rows = run_search(cid, query)
+    rows = run_search(cid, query, login_customer_id=login_customer_id)
     return {"query": query, "row_count": len(rows), "rows": rows}
 
 
-def get_resource_metadata(resource: str, limit: int = 200) -> dict[str, Any]:
+def get_resource_metadata(
+    resource: str, limit: int = 200, login_customer_id: str | None = None
+) -> dict[str, Any]:
     """Describe selectable fields for a Google Ads resource such as campaign or ad_group.
 
     Mirrors the official `get_resource_metadata` tool so an agent can discover
     valid GAQL fields before calling search.
     """
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("GoogleAdsFieldService")
     query = (
         "SELECT name, category, data_type, selectable, filterable, sortable "

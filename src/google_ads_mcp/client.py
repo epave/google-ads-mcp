@@ -69,20 +69,52 @@ def client_config_from_adc(adc: dict[str, Any], settings: Settings) -> dict[str,
     )
 
 
-def _client_from_settings(settings: Settings) -> GoogleAdsClient:
+def resolve_login_customer_id(
+    explicit: str | None = None,
+    settings: Settings | None = None,
+) -> str | None:
+    """Resolve the login-customer header.
+
+    ``None`` uses ``GOOGLE_ADS_LOGIN_CUSTOMER_ID`` / settings.
+    Empty, ``none``, ``null``, or ``-`` forces no MCC header (needed when a
+    cached manager header breaks client-account reads).
+    """
+    cfg = settings or load_settings()
+    if explicit is not None:
+        value = str(explicit).strip()
+        if not value or value.lower() in {"none", "null", "-"}:
+            return None
+        return clean_customer_id(value)
+    if cfg.login_customer_id:
+        return clean_customer_id(cfg.login_customer_id)
+    return None
+
+
+def _apply_login(client: GoogleAdsClient, login_customer_id: str | None) -> GoogleAdsClient:
+    client.login_customer_id = login_customer_id
+    return client
+
+
+def _client_from_settings(
+    settings: Settings, login_override: str | None = None
+) -> GoogleAdsClient:
     yaml_path = settings.resolved_yaml_path()
     if yaml_path is not None:
         logger.info("Loading Google Ads client from %s", yaml_path)
-        return GoogleAdsClient.load_from_storage(str(yaml_path))
+        return _apply_login(GoogleAdsClient.load_from_storage(str(yaml_path)), login_override)
 
     adc = settings.load_adc()
     if adc is not None:
         adc_path = settings.resolved_adc_path()
         logger.info("Loading Google Ads client from ADC %s", adc_path)
         config = client_config_from_adc(adc, settings)
+        if login_override:
+            config["login_customer_id"] = login_override
+        else:
+            config.pop("login_customer_id", None)
         if config.get("use_application_default_credentials") and adc_path is not None:
             os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(adc_path))
-        return GoogleAdsClient.load_from_dict(config)
+        return _apply_login(GoogleAdsClient.load_from_dict(config), login_override)
 
     if not settings.developer_token:
         raise AdsError(
@@ -102,18 +134,27 @@ def _client_from_settings(settings: Settings) -> GoogleAdsClient:
         "refresh_token": settings.refresh_token,
         "use_proto_plus": True,
     }
-    if settings.login_customer_id:
-        config["login_customer_id"] = clean_customer_id(settings.login_customer_id)
-    return GoogleAdsClient.load_from_dict(config)
+    if login_override:
+        config["login_customer_id"] = login_override
+    return _apply_login(GoogleAdsClient.load_from_dict(config), login_override)
 
 
-@lru_cache(maxsize=1)
-def get_client() -> GoogleAdsClient:
-    return _client_from_settings(load_settings())
+@lru_cache(maxsize=8)
+def _cached_client(resolved_login: str | None) -> GoogleAdsClient:
+    return _client_from_settings(load_settings(), resolved_login)
+
+
+def get_client(login_customer_id: str | None = None) -> GoogleAdsClient:
+    """Return a process-cached client for the resolved login-customer header.
+
+    A different ``login_customer_id`` rebuilds the client instead of reusing a
+    stale MCC header. Pass ``none`` to omit the header even if settings set one.
+    """
+    return _cached_client(resolve_login_customer_id(login_customer_id))
 
 
 def reset_client_cache() -> None:
-    get_client.cache_clear()
+    _cached_client.cache_clear()
 
 
 def run_ads_call(fn, *args, **kwargs):

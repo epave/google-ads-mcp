@@ -32,6 +32,7 @@ def get_campaign_dashboard(
     customer_id: str,
     include_paused: bool = False,
     persist_snapshot: bool = True,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Compact live dashboard of campaigns for an agent to read and act on.
 
@@ -43,6 +44,7 @@ def get_campaign_dashboard(
     account = search(
         cid,
         "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1",
+        login_customer_id=login_customer_id,
     )
     if account and account[0].get("customer.manager"):
         name = account[0].get("customer.descriptive_name") or cid
@@ -68,6 +70,7 @@ def get_campaign_dashboard(
         "campaign.primary_status_reasons, campaign.advertising_channel_type, "
         "campaign_budget.amount_micros FROM campaign WHERE "
         f"{status_filter} ORDER BY campaign.name",
+        login_customer_id=login_customer_id,
     )
     today = _index_by_campaign(
         search(
@@ -75,6 +78,7 @@ def get_campaign_dashboard(
             "SELECT campaign.id, metrics.cost_micros, metrics.clicks, metrics.impressions, "
             "metrics.conversions, metrics.conversions_value FROM campaign "
             f"WHERE {status_filter} AND segments.date DURING TODAY",
+            login_customer_id=login_customer_id,
         )
     )
     week = _index_by_campaign(
@@ -83,6 +87,7 @@ def get_campaign_dashboard(
             "SELECT campaign.id, metrics.cost_micros, metrics.clicks, metrics.impressions, "
             "metrics.conversions, metrics.conversions_value FROM campaign "
             f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
+            login_customer_id=login_customer_id,
         )
     )
 
@@ -104,14 +109,17 @@ def get_campaign_dashboard(
         campaign_id = int(row["campaign.id"])
         today_m = today.get(campaign_id, {})
         week_m = week.get(campaign_id, {})
-        spend_today = from_micros(today_m.get("metrics.cost_micros"))
-        spend_7d = from_micros(week_m.get("metrics.cost_micros"))
+        spend_today_micros = today_m.get("metrics.cost_micros")
+        spend_7d_micros = week_m.get("metrics.cost_micros")
+        budget_micros = row.get("campaign_budget.amount_micros")
+        spend_today = from_micros(spend_today_micros)
+        spend_7d = from_micros(spend_7d_micros)
         clicks_7d = float(week_m.get("metrics.clicks") or 0)
         conv_7d = float(week_m.get("metrics.conversions") or 0)
         value_7d = float(week_m.get("metrics.conversions_value") or 0)
         cpa = (spend_7d / conv_7d) if conv_7d else None
         roas = (value_7d / spend_7d) if spend_7d else None
-        budget = from_micros(row.get("campaign_budget.amount_micros"))
+        budget = from_micros(budget_micros)
         reasons = row.get("campaign.primary_status_reasons") or []
         if isinstance(reasons, str):
             reasons = [reasons]
@@ -147,9 +155,9 @@ def get_campaign_dashboard(
                 name=item["name"],
                 channel=item["channel"],
                 status=item["status"],
-                budget=format_money(int(budget * 1_000_000)),
-                today=format_money(int(spend_today * 1_000_000)),
-                week=format_money(int(spend_7d * 1_000_000)),
+                budget=format_money(budget_micros),
+                today=format_money(spend_today_micros),
+                week=format_money(spend_7d_micros),
                 clicks=int(clicks_7d),
                 conv=round(conv_7d, 2),
                 cpa="—" if item["cpa_7d"] is None else f"{item['cpa_7d']:.2f}",

@@ -19,6 +19,26 @@ def default_xdg_config_dir() -> Path:
     return Path.home() / ".config" / "google-ads-mcp"
 
 
+def mkdir_private(path: Path) -> Path:
+    """Create ``path`` and chmod 0700 only directories this call created.
+
+    Existing parents (for example a shared temp directory) are left alone.
+    """
+    path = path.expanduser()
+    created: list[Path] = []
+    cursor = path
+    while not cursor.exists():
+        created.append(cursor)
+        if cursor.parent == cursor:
+            break
+        cursor = cursor.parent
+    path.mkdir(parents=True, exist_ok=True)
+    for item in created:
+        if item.is_dir():
+            item.chmod(0o700)
+    return path
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="",
@@ -99,8 +119,7 @@ class Settings(BaseSettings):
             path = self.db_path
         else:
             path = default_state_dir() / "state.duckdb"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.parent.chmod(0o700)
+        mkdir_private(path.parent)
         return path
 
     def resolved_asset_root(self) -> Path:

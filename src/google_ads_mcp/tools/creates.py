@@ -6,13 +6,18 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from google_ads_mcp.builders.common import (
+    validate_display_copy,
+    validate_pmax_copy,
+    validate_rsa_copy,
+)
 from google_ads_mcp.builders.display import build_display_campaign
 from google_ads_mcp.builders.pmax import build_asset_group_text_ops, build_pmax_campaign
 from google_ads_mcp.builders.search import build_search_campaign
 from google_ads_mcp.client import get_client, run_ads_call
 from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.mutate import mutate
-from google_ads_mcp.safety import SafetyGate
+from google_ads_mcp.safety import SafetyGate, normalize_create_status, with_login_arg
 from google_ads_mcp.store import get_store
 
 
@@ -37,12 +42,14 @@ def create_search_campaign(
     contains_eu_political: bool = False,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a paused Search campaign with budget, ad group, RSA, and keywords.
 
     Requires at least 3 headlines (≤30 chars) and 2 descriptions (≤90 chars).
     The campaign is always created PAUSED. Enable it separately after review.
     """
+    validate_rsa_copy(headlines, descriptions, path1=path1, path2=path2)
     cid = clean_customer_id(customer_id)
     description = (
         f"Create PAUSED Search campaign '{name}' with daily budget {daily_budget}, "
@@ -72,7 +79,7 @@ def create_search_campaign(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     operations = build_search_campaign(
         client,
         cid,
@@ -117,12 +124,14 @@ def create_display_campaign(
     contains_eu_political: bool = False,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a paused Display campaign with a Responsive Display Ad.
 
     Upload images first with upload_image_asset. Marketing image must be 1.91:1
     (min 600x314). Square marketing image must be 1:1 (min 300x300).
     """
+    validate_display_copy(headlines, descriptions, long_headline)
     cid = clean_customer_id(customer_id)
     description = f"Create PAUSED Display campaign '{name}' with daily budget {daily_budget}"
     auth = _gate().authorize_write(
@@ -149,7 +158,7 @@ def create_display_campaign(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     operations = build_display_campaign(
         client,
         cid,
@@ -193,12 +202,14 @@ def create_pmax_campaign(
     contains_eu_political: bool = False,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a paused standard Performance Max campaign (not retail/Merchant Center).
 
     Requires a logo asset plus landscape and square marketing images. Upload those
     with upload_image_asset first. Brand guidelines are on by default.
     """
+    validate_pmax_copy(headlines, descriptions, long_headline, business_name)
     cid = clean_customer_id(customer_id)
     description = f"Create PAUSED Performance Max campaign '{name}' with daily budget {daily_budget}"
     auth = _gate().authorize_write(
@@ -227,7 +238,7 @@ def create_pmax_campaign(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     operations = build_pmax_campaign(
         client,
         cid,
@@ -259,31 +270,49 @@ def add_keywords(
     ad_group_id: str,
     keywords: list[str],
     match_type: str = "BROAD",
+    status: str = "PAUSED",
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Add keywords to an existing ad group. match_type: BROAD, PHRASE, or EXACT."""
+    """Add keywords to an existing ad group. match_type: BROAD, PHRASE, or EXACT.
+
+    Keywords are created PAUSED so they do not serve on a live campaign until
+    you enable them with set_keyword_status. Pass status=ENABLED to serve immediately.
+    """
     cid = clean_customer_id(customer_id)
+    normalized = normalize_create_status(status)
     auth = _gate().authorize_write(
         tool="add_keywords",
         customer_id=cid,
-        args={"ad_group_id": str(ad_group_id), "keywords": keywords, "match_type": match_type},
-        description=f"Add {len(keywords)} {match_type} keywords to ad group {ad_group_id}",
+        args=with_login_arg(
+            {
+                "ad_group_id": str(ad_group_id),
+                "keywords": keywords,
+                "match_type": match_type,
+                "status": normalized,
+            },
+            login_customer_id,
+        ),
+        description=(
+            f"Add {len(keywords)} {match_type} {normalized} keywords to ad group {ad_group_id}"
+        ),
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdGroupCriterionService")
     ad_group_service = client.get_service("AdGroupService")
     match = getattr(client.enums.KeywordMatchTypeEnum, match_type.upper())
+    criterion_status = getattr(client.enums.AdGroupCriterionStatusEnum, normalized)
     operations = []
     for text in keywords:
         operation = client.get_type("AdGroupCriterionOperation")
         criterion = operation.create
         criterion.ad_group = ad_group_service.ad_group_path(cid, ad_group_id)
-        criterion.status = client.enums.AdGroupCriterionStatusEnum.ENABLED
+        criterion.status = criterion_status
         criterion.keyword.text = text
         criterion.keyword.match_type = match
         operations.append(operation)
@@ -292,42 +321,56 @@ def add_keywords(
     get_store().record_audit(
         tool="add_keywords", action="apply", customer_id=cid, payload={"keywords": keywords}
     )
-    return {"status": "applied", "resource_names": names}
+    return {"status": "applied", "created_paused": normalized == "PAUSED", "resource_names": names}
 
 
 def create_ad_group(
     customer_id: str,
     campaign_id: str,
     name: str,
+    status: str = "PAUSED",
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create an ENABLED ad group under an existing campaign."""
+    """Create a PAUSED ad group under an existing campaign.
+
+    Defaults to PAUSED so expanding a live campaign cannot spend until you
+    enable the ad group. Pass status=ENABLED only when that is intentional.
+    """
     cid = clean_customer_id(customer_id)
+    normalized = normalize_create_status(status)
     auth = _gate().authorize_write(
         tool="create_ad_group",
         customer_id=cid,
-        args={"campaign_id": str(campaign_id), "name": name},
-        description=f"Create ad group '{name}' in campaign {campaign_id}",
+        args=with_login_arg(
+            {"campaign_id": str(campaign_id), "name": name, "status": normalized},
+            login_customer_id,
+        ),
+        description=f"Create {normalized} ad group '{name}' in campaign {campaign_id}",
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdGroupService")
     campaign_service = client.get_service("CampaignService")
     operation = client.get_type("AdGroupOperation")
     ad_group = operation.create
     ad_group.name = name
     ad_group.campaign = campaign_service.campaign_path(cid, campaign_id)
-    ad_group.status = client.enums.AdGroupStatusEnum.ENABLED
+    ad_group.status = getattr(client.enums.AdGroupStatusEnum, normalized)
     response = run_ads_call(service.mutate_ad_groups, customer_id=cid, operations=[operation])
     resource_name = response.results[0].resource_name
     get_store().record_audit(
         tool="create_ad_group", action="apply", customer_id=cid, payload={"name": name}
     )
-    return {"status": "applied", "resource_name": resource_name}
+    return {
+        "status": "applied",
+        "created_paused": normalized == "PAUSED",
+        "resource_name": resource_name,
+    }
 
 
 def update_responsive_search_ad(
@@ -340,13 +383,16 @@ def update_responsive_search_ad(
     path2: str | None = None,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Replace headlines and descriptions on an existing responsive search ad.
 
     Pass the full headline and description lists. Google Ads replaces the set.
+    Headlines must be ≤30 characters; descriptions ≤90.
     """
     from google.api_core import protobuf_helpers
 
+    validate_rsa_copy(headlines, descriptions, path1=path1, path2=path2)
     cid = clean_customer_id(customer_id)
     args = {
         "ad_id": str(ad_id),
@@ -366,9 +412,7 @@ def update_responsive_search_ad(
     )
     if auth.get("status") == "preview":
         return auth
-    if len(headlines) < 3 or len(descriptions) < 2:
-        raise ValueError("RSA update requires at least 3 headlines and 2 descriptions.")
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdService")
     operation = client.get_type("AdOperation")
     ad = operation.update
@@ -401,6 +445,7 @@ def add_campaign_locations(
     geo_target_constant_ids: list[str],
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Add location targeting to a campaign using geo target constant IDs (e.g. 2840 for US)."""
     cid = clean_customer_id(customer_id)
@@ -415,7 +460,7 @@ def add_campaign_locations(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("CampaignCriterionService")
     campaign_service = client.get_service("CampaignService")
     geo_service = client.get_service("GeoTargetConstantService")
@@ -440,6 +485,7 @@ def add_campaign_languages(
     language_constant_ids: list[str],
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Add language targeting to a campaign using language constant IDs (e.g. 1000 for English)."""
     cid = clean_customer_id(customer_id)
@@ -454,7 +500,7 @@ def add_campaign_languages(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("CampaignCriterionService")
     campaign_service = client.get_service("CampaignService")
     operations = []
@@ -479,6 +525,7 @@ def add_asset_group_text(
     descriptions: list[str] | None = None,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Add headline/description text assets to an existing Performance Max asset group."""
     cid = clean_customer_id(customer_id)
@@ -497,7 +544,7 @@ def add_asset_group_text(
     )
     if auth.get("status") == "preview":
         return auth
-    client = get_client()
+    client = get_client(login_customer_id)
     operations = build_asset_group_text_ops(
         client,
         cid,

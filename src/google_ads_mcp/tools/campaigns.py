@@ -15,6 +15,7 @@ def list_campaigns(
     customer_id: str,
     status: str | None = "ENABLED",
     limit: int = 100,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """List campaigns with status, channel, budget, and bidding strategy.
 
@@ -32,6 +33,7 @@ def list_campaigns(
         "campaign_budget.id, campaign_budget.amount_micros, campaign.start_date_time, "
         "campaign.end_date_time FROM campaign "
         f"WHERE {query_conditions} ORDER BY campaign.name LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     campaigns = []
     for row in rows:
@@ -44,7 +46,9 @@ def list_campaigns(
     return {"customer_id": cid, "count": len(campaigns), "campaigns": campaigns}
 
 
-def get_campaign(customer_id: str, campaign_id: str) -> dict[str, Any]:
+def get_campaign(
+    customer_id: str, campaign_id: str, login_customer_id: str | None = None
+) -> dict[str, Any]:
     """Get one campaign plus its budget and recent 7-day performance."""
     cid = clean_customer_id(customer_id)
     details = search(
@@ -54,6 +58,7 @@ def get_campaign(customer_id: str, campaign_id: str) -> dict[str, Any]:
         "campaign.bidding_strategy_type, campaign_budget.amount_micros, "
         "campaign.network_settings.target_google_search, campaign.start_date_time "
         f"FROM campaign WHERE campaign.id = {int(campaign_id)} LIMIT 1",
+        login_customer_id=login_customer_id,
     )
     metrics = search(
         cid,
@@ -61,6 +66,7 @@ def get_campaign(customer_id: str, campaign_id: str) -> dict[str, Any]:
         "metrics.conversions, metrics.conversions_value, metrics.average_cpc "
         f"FROM campaign WHERE campaign.id = {int(campaign_id)} "
         "AND segments.date DURING LAST_7_DAYS",
+        login_customer_id=login_customer_id,
     )
     return {
         "campaign": details[0] if details else None,
@@ -69,7 +75,12 @@ def get_campaign(customer_id: str, campaign_id: str) -> dict[str, Any]:
     }
 
 
-def list_ad_groups(customer_id: str, campaign_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+def list_ad_groups(
+    customer_id: str,
+    campaign_id: str | None = None,
+    limit: int = 100,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
     """List ad groups, optionally filtered to one campaign."""
     cid = clean_customer_id(customer_id)
     conditions = ["ad_group.status != 'REMOVED'"]
@@ -81,11 +92,17 @@ def list_ad_groups(customer_id: str, campaign_id: str | None = None, limit: int 
         "campaign.id, campaign.name FROM ad_group WHERE "
         + " AND ".join(conditions)
         + f" ORDER BY ad_group.name LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "ad_groups": rows}
 
 
-def list_ads(customer_id: str, ad_group_id: str | None = None, limit: int = 50) -> dict[str, Any]:
+def list_ads(
+    customer_id: str,
+    ad_group_id: str | None = None,
+    limit: int = 50,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
     """List ads with type, status, and policy summary."""
     cid = clean_customer_id(customer_id)
     conditions = ["ad_group_ad.status != 'REMOVED'"]
@@ -98,11 +115,17 @@ def list_ads(customer_id: str, ad_group_id: str | None = None, limit: int = 50) 
         "FROM ad_group_ad WHERE "
         + " AND ".join(conditions)
         + f" LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "ads": rows}
 
 
-def list_keywords(customer_id: str, ad_group_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+def list_keywords(
+    customer_id: str,
+    ad_group_id: str | None = None,
+    limit: int = 200,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
     """List keywords with match type, status, and bid."""
     cid = clean_customer_id(customer_id)
     conditions = ["ad_group_criterion.type = 'KEYWORD'", "ad_group_criterion.status != 'REMOVED'"]
@@ -115,6 +138,7 @@ def list_keywords(customer_id: str, ad_group_id: str | None = None, limit: int =
         "ad_group_criterion.cpc_bid_micros FROM ad_group_criterion WHERE "
         + " AND ".join(conditions)
         + f" LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "keywords": rows}
 

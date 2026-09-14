@@ -111,13 +111,14 @@ claude mcp add google-ads -- uv run --directory /ABS/PATH/TO/google-ads-mcp goog
 | Control | Default | Env |
 |---|---|---|
 | Writes | off | `GOOGLE_ADS_WRITE_ENABLED=true` |
-| Confirm token | required | `GOOGLE_ADS_SKIP_CONFIRM=true` to skip |
+| Confirm token | required | Leave `GOOGLE_ADS_SKIP_CONFIRM` unset. `true` applies writes in one shot — keep it off for Codex/Claude. |
 | Customer allowlist | none | `GOOGLE_ADS_ALLOWED_CUSTOMER_IDS=123,456` |
 | Budget increase cap | 20% | `GOOGLE_ADS_BUDGET_INCREASE_CAP=0.20` (`force=true` to override) |
+| Remove entity | blocked | `REMOVED` on status tools requires `force=true` |
 | Local store | `~/.google-ads-mcp/state.duckdb` | `GOOGLE_ADS_MCP_DB` |
 | Image uploads | cwd | `GOOGLE_ADS_ASSET_ROOT` |
 
-Typical write: call the tool with `dry_run=true` → inspect the preview → call again with the same arguments, `dry_run=false`, and `confirm_token`. Creates stay **PAUSED**; enabling is a second call to `set_campaign_status`.
+Typical write: call the tool with `dry_run=true` → inspect the preview → call again with the same arguments, `dry_run=false`, and `confirm_token`. Status is stored uppercase (`paused` and `PAUSED` are the same token). New campaigns, ad groups, and keywords stay **PAUSED**; enabling is a second call. Do not set `GOOGLE_ADS_SKIP_CONFIRM=true` in an agent host — that skips the preview and mutates immediately.
 
 ## Tools
 
@@ -136,16 +137,16 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 
 **Manage**
 
-- `set_campaign_status` / `set_ad_group_status` / `set_ad_status` / `set_keyword_status`
+- `set_campaign_status` / `set_ad_group_status` / `set_ad_status` / `set_keyword_status` (`REMOVED` needs `force=true`)
 - `update_campaign_budget`, `update_campaign_bidding`
 
-**Create / expand** (always PAUSED at campaign create)
+**Create / expand** (campaigns, ad groups, and keywords default PAUSED)
 
 - `create_search_campaign` — budget + campaign + ad group + RSA + keywords
 - `create_display_campaign` — needs image assets (1.91:1 and 1:1)
 - `create_pmax_campaign` — standard Performance Max, not retail/Merchant Center
-- `upload_image_asset`, `create_ad_group`, `add_keywords`
-- `update_responsive_search_ad` — replace RSA headlines/descriptions
+- `upload_image_asset`, `create_ad_group`, `add_keywords` (pass `status=ENABLED` only if you intend to serve immediately)
+- `update_responsive_search_ad` — replace RSA headlines/descriptions (headlines ≤30 chars, descriptions ≤90)
 - `add_campaign_locations` / `add_campaign_languages` — geo (e.g. `2840` US) and language (e.g. `1000` English)
 - `add_asset_group_text` — add headlines/descriptions to a PMax asset group
 
@@ -252,7 +253,7 @@ set_campaign_status(
 get_campaign(customer_id="1234567890", campaign_id="111")
 ```
 
-Resume the same way with `status="ENABLED"`. Do not pass `confirm_token` on a `dry_run=true` call.
+Resume the same way with `status="ENABLED"`. Do not pass `confirm_token` on a `dry_run=true` call. `REMOVED` is a hard delete — it needs `force=true` on both the preview and the apply.
 
 ### 4. Change budget
 
@@ -318,6 +319,7 @@ Optional follow-ups:
 add_campaign_locations(customer_id="1234567890", campaign_id="111", geo_target_constant_ids=["2840"])
 add_campaign_languages(customer_id="1234567890", campaign_id="111", language_constant_ids=["1000"])
 add_keywords(customer_id="1234567890", ad_group_id="222", keywords=["trail running shoes"], match_type="PHRASE")
+create_ad_group(customer_id="1234567890", campaign_id="111", name="Second ad group")
 update_responsive_search_ad(
   customer_id="1234567890",
   ad_id="333",
@@ -378,7 +380,9 @@ Retail / Merchant Center PMax is out of v1.
 
 `list_accessible_customers` may return both a manager and a client. Dashboards and metrics must use the **client** id. On an MCC you will get a message to pick a non-manager customer instead of a metrics API error.
 
-If client-account calls fail with “login-customer-id must be set”, add the MCC id to `.env`:
+Every Ads tool accepts optional `login_customer_id`. The client is rebuilt when that header changes (it is no longer a single process-wide cache). If client-account calls fail because a manager header is stuck, pass `login_customer_id="none"` on that call.
+
+If client-account calls fail with “login-customer-id must be set”, pass the MCC id on the tool or add it to `.env`:
 
 ```bash
 GOOGLE_ADS_LOGIN_CUSTOMER_ID=0000000000

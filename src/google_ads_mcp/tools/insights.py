@@ -11,7 +11,12 @@ from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.store import get_store
 
 
-def get_search_terms(customer_id: str, campaign_id: str | None = None, limit: int = 50) -> dict[str, Any]:
+def get_search_terms(
+    customer_id: str,
+    campaign_id: str | None = None,
+    limit: int = 50,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
     """Top search terms for the last 7 days."""
     cid = clean_customer_id(customer_id)
     conditions = ["segments.date DURING LAST_7_DAYS"]
@@ -24,11 +29,14 @@ def get_search_terms(customer_id: str, campaign_id: str | None = None, limit: in
         "FROM search_term_view WHERE "
         + " AND ".join(conditions)
         + f" ORDER BY metrics.clicks DESC LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "search_terms": rows}
 
 
-def get_change_events(customer_id: str, limit: int = 50) -> dict[str, Any]:
+def get_change_events(
+    customer_id: str, limit: int = 50, login_customer_id: str | None = None
+) -> dict[str, Any]:
     """Recent account change events (last 7 days)."""
     cid = clean_customer_id(customer_id)
     rows = search(
@@ -38,11 +46,14 @@ def get_change_events(customer_id: str, limit: int = 50) -> dict[str, Any]:
         "change_event.resource_change_operation, change_event.resource_name "
         "FROM change_event WHERE change_event.change_date_time DURING LAST_7_DAYS "
         f"ORDER BY change_event.change_date_time DESC LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "changes": rows}
 
 
-def get_recommendations(customer_id: str, limit: int = 25) -> dict[str, Any]:
+def get_recommendations(
+    customer_id: str, limit: int = 25, login_customer_id: str | None = None
+) -> dict[str, Any]:
     """Google Ads optimization recommendations that are still pending."""
     cid = clean_customer_id(customer_id)
     rows = search(
@@ -50,6 +61,7 @@ def get_recommendations(customer_id: str, limit: int = 25) -> dict[str, Any]:
         "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
         "recommendation.impact FROM recommendation WHERE recommendation.dismissed = FALSE "
         f"LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
     )
     return {"count": len(rows), "recommendations": rows}
 

@@ -1,10 +1,14 @@
 from pathlib import Path
 
+import pytest
+
 from google_ads_mcp.store import reset_store_for_tests
 from google_ads_mcp.tools.creates import (
     add_asset_group_text,
     add_campaign_languages,
     add_campaign_locations,
+    add_keywords,
+    create_ad_group,
     create_search_campaign,
     update_responsive_search_ad,
 )
@@ -65,3 +69,36 @@ def test_update_rsa_and_criteria_previews(monkeypatch, tmp_path: Path) -> None:
         dry_run=True,
     )
     assert assets["status"] == "preview"
+
+
+def test_create_ad_group_and_keywords_default_paused(monkeypatch, tmp_path: Path) -> None:
+    _isolate_store(monkeypatch, tmp_path)
+    group = create_ad_group(
+        customer_id="1234567890",
+        campaign_id="22",
+        name="Second group",
+        dry_run=True,
+    )
+    assert group["status"] == "preview"
+    assert group["args"]["status"] == "PAUSED"
+    assert "PAUSED" in group["description"]
+    keywords = add_keywords(
+        customer_id="1234567890",
+        ad_group_id="33",
+        keywords=["trail running shoes"],
+        dry_run=True,
+    )
+    assert keywords["status"] == "preview"
+    assert keywords["args"]["status"] == "PAUSED"
+
+
+def test_update_rsa_rejects_overlong_copy(monkeypatch, tmp_path: Path) -> None:
+    _isolate_store(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="exceeds 30 characters"):
+        update_responsive_search_ad(
+            customer_id="1234567890",
+            ad_id="11",
+            headlines=["This headline is way too long for RSA", "H2", "H3"],
+            descriptions=["D1", "D2"],
+            dry_run=True,
+        )

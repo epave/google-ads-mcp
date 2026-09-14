@@ -25,7 +25,7 @@ High-severity leftover findings fail the build. After changing a PR, re-run the 
 
 ## Writes
 
-Do not add mutate tools that skip `SafetyGate`. New campaigns stay paused. Image fetches stay https/public and rooted under `GOOGLE_ADS_ASSET_ROOT`.
+Do not add mutate tools that skip `SafetyGate`. New campaigns, ad groups, and keywords stay paused. Image fetches stay https/public and rooted under `GOOGLE_ADS_ASSET_ROOT`. `REMOVED` requires `force=true`.
 
 ## GitHub CLI
 

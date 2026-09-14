@@ -105,3 +105,29 @@ def test_asset_group_text_ops() -> None:
     assert operations[1].asset_group_asset_operation.create.field_type == (
         client.enums.AssetFieldTypeEnum.HEADLINE
     )
+
+
+def test_search_rejects_overlong_headline() -> None:
+    with pytest.raises(ValueError, match="exceeds 30 characters"):
+        build_search_campaign(
+            _Boom(),
+            "123",
+            name="n",
+            daily_budget=10,
+            final_url="https://example.com",
+            headlines=["This headline is way too long for RSA", "Spring sale", "Free shipping"],
+            descriptions=["Shop the new drop.", "Limited time offer."],
+        )
+
+
+def test_search_rejects_overlong_description() -> None:
+    with pytest.raises(ValueError, match="exceeds 90 characters"):
+        build_search_campaign(
+            _Boom(),
+            "123",
+            name="n",
+            daily_budget=10,
+            final_url="https://example.com",
+            headlines=["Buy shoes", "Spring sale", "Free shipping"],
+            descriptions=["x" * 91, "Limited time offer."],
+        )

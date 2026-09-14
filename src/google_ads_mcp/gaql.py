@@ -45,7 +45,7 @@ def format_output_value(value: Any) -> Any:
         return proto.Message.to_dict(value)
     if isinstance(value, PbMessage):
         return MessageToDict(value, preserving_proto_field_name=True)
-    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+    if hasattr(value, "__iter__") and not isinstance(value, str | bytes):
         return [format_output_value(item) for item in value]
     return value
 
@@ -59,8 +59,9 @@ def search(
     query: str,
     *,
     client=None,
+    login_customer_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    ads_client = client or get_client()
+    ads_client = client or get_client(login_customer_id)
     service = ads_client.get_service("GoogleAdsService")
     cid = clean_customer_id(customer_id)
     stream = run_ads_call(service.search_stream, customer_id=cid, query=query)

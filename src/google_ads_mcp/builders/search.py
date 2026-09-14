@@ -9,6 +9,7 @@ from google_ads_mcp.builders.common import (
     budget_operation,
     default_dates,
     set_eu_political_flag,
+    validate_rsa_copy,
 )
 from google_ads_mcp.mutate import TempIds
 
@@ -37,10 +38,7 @@ def build_search_campaign(
     path2: str | None = None,
     contains_eu_political: bool = False,
 ) -> list[Any]:
-    if len(headlines) < 3:
-        raise ValueError("Search RSA requires at least 3 headlines (max 30 chars each).")
-    if len(descriptions) < 2:
-        raise ValueError("Search RSA requires at least 2 descriptions (max 90 chars each).")
+    validate_rsa_copy(headlines, descriptions, path1=path1, path2=path2)
 
     temps = TempIds()
     operations: list[Any] = []

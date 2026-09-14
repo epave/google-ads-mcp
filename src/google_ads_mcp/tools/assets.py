@@ -110,6 +110,7 @@ def upload_image_asset(
     source: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Upload an image asset from a local file path or HTTPS URL.
 
@@ -129,7 +130,7 @@ def upload_image_asset(
     if auth.get("status") == "preview":
         return auth
     data = read_asset_bytes(source)
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AssetService")
     operation = client.get_type("AssetOperation")
     asset = operation.create

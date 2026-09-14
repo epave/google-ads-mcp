@@ -2,12 +2,44 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from google_ads_mcp.config import Settings, load_settings
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.store import Store, get_store
+
+logger = logging.getLogger(__name__)
+
+CREATE_STATUSES = frozenset({"ENABLED", "PAUSED"})
+
+
+def normalize_status(status: str) -> str:
+    return status.strip().upper()
+
+
+def require_force_for_removed(status: str, force: bool) -> str:
+    """Reject REMOVED unless the caller opted in with force=true."""
+    key = normalize_status(status)
+    if key == "REMOVED" and not force:
+        raise AdsError(
+            "REMOVED permanently deletes the entity. Pass force=true if this is intentional."
+        )
+    return key
+
+
+def normalize_create_status(status: str) -> str:
+    key = normalize_status(status)
+    if key not in CREATE_STATUSES:
+        raise AdsError(f"Create status must be PAUSED or ENABLED, not {status!r}.")
+    return key
+
+
+def with_login_arg(args: dict[str, Any], login_customer_id: str | None) -> dict[str, Any]:
+    if login_customer_id is None:
+        return args
+    return {**args, "login_customer_id": login_customer_id}
 
 
 class SafetyGate:
@@ -69,18 +101,21 @@ class SafetyGate:
                 "description": description,
                 "args": args,
                 "next_step": (
-                    f"Re-call {tool} with the same arguments, dry_run=false, and confirm_token. "
-                    "Set GOOGLE_ADS_SKIP_CONFIRM=true to skip this step."
+                    f"Re-call {tool} with the same arguments, dry_run=false, and confirm_token."
                 ),
             }
 
         self.assert_writes_enabled()
+        if self.settings.skip_confirm:
+            logger.warning(
+                "GOOGLE_ADS_SKIP_CONFIRM is on: applying %s without a confirm token",
+                tool,
+            )
         if not self.settings.skip_confirm:
             if not confirm_token:
                 raise AdsError(
                     "Missing confirm_token. Call again with dry_run=true, then pass "
-                    "the returned confirm_token with dry_run=false. "
-                    "Or set GOOGLE_ADS_SKIP_CONFIRM=true."
+                    "the returned confirm_token with dry_run=false."
                 )
             try:
                 self.store.consume_preview(

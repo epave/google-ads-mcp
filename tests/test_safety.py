@@ -108,3 +108,12 @@ def test_budget_cap(tmp_path: Path) -> None:
     with pytest.raises(AdsError):
         gate.assert_budget_increase_ok(10, 20, force=False)
     gate.assert_budget_increase_ok(10, 20, force=True)
+
+
+def test_removed_requires_force() -> None:
+    from google_ads_mcp.safety import require_force_for_removed
+
+    with pytest.raises(AdsError, match="force=true"):
+        require_force_for_removed("removed", force=False)
+    assert require_force_for_removed("removed", force=True) == "REMOVED"
+    assert require_force_for_removed("paused", force=False) == "PAUSED"

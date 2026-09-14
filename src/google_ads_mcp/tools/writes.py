@@ -11,7 +11,7 @@ from google_ads_mcp.gaql import search
 from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.money import from_micros, to_micros
 from google_ads_mcp.mutate import apply_update_mask, status_enum
-from google_ads_mcp.safety import SafetyGate
+from google_ads_mcp.safety import SafetyGate, require_force_for_removed, with_login_arg
 from google_ads_mcp.store import get_store
 
 
@@ -25,31 +25,47 @@ def _maybe_preview(result: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _status_args(
+    extra: dict[str, Any],
+    status: str,
+    force: bool,
+    login_customer_id: str | None,
+) -> tuple[str, dict[str, Any]]:
+    normalized = require_force_for_removed(status, force)
+    return normalized, with_login_arg(
+        {**extra, "status": normalized, "force": force}, login_customer_id
+    )
+
+
 def set_campaign_status(
     customer_id: str,
     campaign_id: str,
     status: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    force: bool = False,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Set a campaign to ENABLED, PAUSED, or REMOVED.
 
     Defaults to dry_run. Re-call with the returned confirm_token to apply.
     Writes require GOOGLE_ADS_WRITE_ENABLED=true.
+    REMOVED permanently deletes the campaign and requires force=true.
     """
     cid = clean_customer_id(customer_id)
-    description = f"Set campaign {campaign_id} to {status.upper()}"
+    status, args = _status_args({"campaign_id": str(campaign_id)}, status, force, login_customer_id)
+    description = f"Set campaign {campaign_id} to {status}"
     auth = _gate().authorize_write(
         tool="set_campaign_status",
         customer_id=cid,
-        args={"campaign_id": str(campaign_id), "status": status},
+        args=args,
         description=description,
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if preview := _maybe_preview(auth):
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("CampaignService")
     operation = client.get_type("CampaignOperation")
     campaign = operation.update
@@ -62,9 +78,9 @@ def set_campaign_status(
         tool="set_campaign_status",
         action="apply",
         customer_id=cid,
-        payload={"campaign_id": campaign_id, "status": status.upper(), "resource_name": resource_name},
+        payload={"campaign_id": campaign_id, "status": status, "resource_name": resource_name},
     )
-    return {"status": "applied", "resource_name": resource_name, "campaign_status": status.upper()}
+    return {"status": "applied", "resource_name": resource_name, "campaign_status": status}
 
 
 def set_ad_group_status(
@@ -73,21 +89,27 @@ def set_ad_group_status(
     status: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    force: bool = False,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Set an ad group to ENABLED, PAUSED, or REMOVED."""
+    """Set an ad group to ENABLED, PAUSED, or REMOVED.
+
+    REMOVED permanently deletes the ad group and requires force=true.
+    """
     cid = clean_customer_id(customer_id)
-    description = f"Set ad group {ad_group_id} to {status.upper()}"
+    status, args = _status_args({"ad_group_id": str(ad_group_id)}, status, force, login_customer_id)
+    description = f"Set ad group {ad_group_id} to {status}"
     auth = _gate().authorize_write(
         tool="set_ad_group_status",
         customer_id=cid,
-        args={"ad_group_id": str(ad_group_id), "status": status},
+        args=args,
         description=description,
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if preview := _maybe_preview(auth):
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdGroupService")
     operation = client.get_type("AdGroupOperation")
     ad_group = operation.update
@@ -100,7 +122,7 @@ def set_ad_group_status(
         tool="set_ad_group_status",
         action="apply",
         customer_id=cid,
-        payload={"ad_group_id": ad_group_id, "status": status.upper()},
+        payload={"ad_group_id": ad_group_id, "status": status},
     )
     return {"status": "applied", "resource_name": resource_name}
 
@@ -112,20 +134,31 @@ def set_ad_status(
     status: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    force: bool = False,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Set an ad to ENABLED, PAUSED, or REMOVED."""
+    """Set an ad to ENABLED, PAUSED, or REMOVED.
+
+    REMOVED permanently deletes the ad and requires force=true.
+    """
     cid = clean_customer_id(customer_id)
+    status, args = _status_args(
+        {"ad_group_id": str(ad_group_id), "ad_id": str(ad_id)},
+        status,
+        force,
+        login_customer_id,
+    )
     auth = _gate().authorize_write(
         tool="set_ad_status",
         customer_id=cid,
-        args={"ad_group_id": str(ad_group_id), "ad_id": str(ad_id), "status": status},
-        description=f"Set ad {ad_id} to {status.upper()}",
+        args=args,
+        description=f"Set ad {ad_id} to {status}",
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if preview := _maybe_preview(auth):
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdGroupAdService")
     operation = client.get_type("AdGroupAdOperation")
     ad = operation.update
@@ -137,7 +170,7 @@ def set_ad_status(
         tool="set_ad_status",
         action="apply",
         customer_id=cid,
-        payload={"ad_id": ad_id, "status": status.upper()},
+        payload={"ad_id": ad_id, "status": status},
     )
     return {"status": "applied", "resource_name": response.results[0].resource_name}
 
@@ -149,20 +182,31 @@ def set_keyword_status(
     status: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    force: bool = False,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Set a keyword criterion to ENABLED, PAUSED, or REMOVED."""
+    """Set a keyword criterion to ENABLED, PAUSED, or REMOVED.
+
+    REMOVED permanently deletes the keyword and requires force=true.
+    """
     cid = clean_customer_id(customer_id)
+    status, args = _status_args(
+        {"ad_group_id": str(ad_group_id), "criterion_id": str(criterion_id)},
+        status,
+        force,
+        login_customer_id,
+    )
     auth = _gate().authorize_write(
         tool="set_keyword_status",
         customer_id=cid,
-        args={"ad_group_id": str(ad_group_id), "criterion_id": str(criterion_id), "status": status},
-        description=f"Set keyword {criterion_id} to {status.upper()}",
+        args=args,
+        description=f"Set keyword {criterion_id} to {status}",
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if preview := _maybe_preview(auth):
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("AdGroupCriterionService")
     operation = client.get_type("AdGroupCriterionOperation")
     criterion = operation.update
@@ -174,7 +218,7 @@ def set_keyword_status(
         tool="set_keyword_status",
         action="apply",
         customer_id=cid,
-        payload={"criterion_id": criterion_id, "status": status.upper()},
+        payload={"criterion_id": criterion_id, "status": status},
     )
     return {"status": "applied", "resource_name": response.results[0].resource_name}
 
@@ -186,6 +230,7 @@ def update_campaign_budget(
     dry_run: bool = True,
     confirm_token: str | None = None,
     force: bool = False,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Change a campaign's daily budget. Amount is in account currency, not micros.
 
@@ -196,6 +241,7 @@ def update_campaign_budget(
         cid,
         "SELECT campaign_budget.resource_name, campaign_budget.amount_micros "
         f"FROM campaign WHERE campaign.id = {int(campaign_id)} LIMIT 1",
+        login_customer_id=login_customer_id,
     )
     if not current_rows:
         raise ValueError(f"Campaign {campaign_id} not found")
@@ -205,7 +251,10 @@ def update_campaign_budget(
     auth = _gate().authorize_write(
         tool="update_campaign_budget",
         customer_id=cid,
-        args={"campaign_id": str(campaign_id), "daily_budget": daily_budget, "force": force},
+        args=with_login_arg(
+            {"campaign_id": str(campaign_id), "daily_budget": daily_budget, "force": force},
+            login_customer_id,
+        ),
         description=f"Change campaign {campaign_id} daily budget {current_amount} -> {daily_budget}",
         dry_run=dry_run,
         confirm_token=confirm_token,
@@ -214,7 +263,7 @@ def update_campaign_budget(
         preview["current_daily_budget"] = current_amount
         preview["new_daily_budget"] = daily_budget
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("CampaignBudgetService")
     operation = client.get_type("CampaignBudgetOperation")
     budget = operation.update
@@ -243,6 +292,7 @@ def update_campaign_bidding(
     target_roas: float | None = None,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Update a campaign bidding strategy.
 
@@ -255,19 +305,22 @@ def update_campaign_bidding(
     auth = _gate().authorize_write(
         tool="update_campaign_bidding",
         customer_id=cid,
-        args={
-            "campaign_id": str(campaign_id),
-            "bidding_strategy": bidding_strategy,
-            "target_cpa": target_cpa,
-            "target_roas": target_roas,
-        },
+        args=with_login_arg(
+            {
+                "campaign_id": str(campaign_id),
+                "bidding_strategy": bidding_strategy,
+                "target_cpa": target_cpa,
+                "target_roas": target_roas,
+            },
+            login_customer_id,
+        ),
         description=f"Set campaign {campaign_id} bidding to {bidding_strategy}",
         dry_run=dry_run,
         confirm_token=confirm_token,
     )
     if preview := _maybe_preview(auth):
         return preview
-    client = get_client()
+    client = get_client(login_customer_id)
     service = client.get_service("CampaignService")
     operation = client.get_type("CampaignOperation")
     campaign = operation.update

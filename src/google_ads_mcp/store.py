@@ -15,6 +15,8 @@ from uuid import uuid4
 
 import duckdb
 
+from google_ads_mcp.config import mkdir_private
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,8 +57,7 @@ CREATE TABLE IF NOT EXISTS dashboard_snapshots (
 class Store:
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.parent.chmod(0o700)
+        mkdir_private(self.path.parent)
         self._conn = duckdb.connect(str(self.path))
         if self.path.exists():
             self.path.chmod(0o600)

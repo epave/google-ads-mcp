@@ -9,6 +9,7 @@ from google_ads_mcp.builders.common import (
     budget_operation,
     default_dates,
     set_eu_political_flag,
+    validate_display_copy,
 )
 from google_ads_mcp.mutate import TempIds
 
@@ -37,10 +38,7 @@ def build_display_campaign(
     logo_image_asset: str | None = None,
     contains_eu_political: bool = False,
 ) -> list[Any]:
-    if len(headlines) < 1:
-        raise ValueError("Display ads require at least 1 headline.")
-    if len(descriptions) < 1:
-        raise ValueError("Display ads require at least 1 description.")
+    validate_display_copy(headlines, descriptions, long_headline)
 
     temps = TempIds()
     operations: list[Any] = []

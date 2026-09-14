@@ -24,8 +24,14 @@ def apply_update_mask(client, operation, resource) -> None:
     client.copy_from(operation.update_mask, protobuf_helpers.field_mask(None, resource._pb))
 
 
-def mutate(customer_id: str, operations: Iterable[Any], *, client=None) -> dict[str, Any]:
-    ads_client = client or get_client()
+def mutate(
+    customer_id: str,
+    operations: Iterable[Any],
+    *,
+    client=None,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
+    ads_client = client or get_client(login_customer_id)
     service = ads_client.get_service("GoogleAdsService")
     cid = clean_customer_id(customer_id)
     ops = list(operations)
