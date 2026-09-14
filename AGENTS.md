@@ -26,3 +26,7 @@ High-severity leftover findings fail the build. After changing a PR, re-run the 
 ## Writes
 
 Do not add mutate tools that skip `SafetyGate`. New campaigns stay paused. Image fetches stay https/public and rooted under `GOOGLE_ADS_ASSET_ROOT`.
+
+## GitHub CLI
+
+Use the personal account, not the default `gh` login. In this repo (and other `~/personal` work) run `gh-personal` (alias: `GH_CONFIG_DIR=~/.config/gh-personal command gh`). Cursor shells often skip zsh aliases, so prefer the `GH_CONFIG_DIR=... command gh` form for issues, PRs, and pushes.
