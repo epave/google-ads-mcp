@@ -1,0 +1,7 @@
+# Copy to google-ads.yaml or ~/.google-ads-mcp/google-ads.yaml
+developer_token: YOUR_DEVELOPER_TOKEN
+client_id: YOUR_OAUTH_CLIENT_ID
+client_secret: YOUR_OAUTH_CLIENT_SECRET
+refresh_token: YOUR_REFRESH_TOKEN
+use_proto_plus: True
+# login_customer_id: YOUR_MCC_ID
