@@ -19,7 +19,7 @@ DuckDB is local audit/snapshots only. User override: **DuckDB 2.0 alpha**, not p
 
 ## Plan
 
-uv + FastMCP + official `google-ads` client + DuckDB 2.0 (`VARIANT` payloads). Stdio for local hosts. No web UI.
+uv + FastMCP 4 + official `google-ads` 32.x client (Google Ads API v25) + DuckDB 2.0 (`VARIANT` payloads). Stdio for local hosts. No web UI.
 
 ## Tasks
 

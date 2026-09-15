@@ -6,4 +6,4 @@
 - Campaign creates must stay `PAUSED`. Enabling spend is a separate status call.
 - Image `source` URLs must be https, public-IP only, no redirects. Local files must stay under `GOOGLE_ADS_ASSET_ROOT`.
 - Do not commit `google-ads.yaml`, refresh tokens, or DuckDB state files.
-- Prefer DuckDB 2.0 (`duckdb>=1.6.0.dev0` with `prerelease = "allow"`) for local audit/snapshots.
+- Prefer DuckDB 2.0 (`duckdb>=2.0.0.dev0` with `prerelease = "allow"`) for local audit/snapshots.

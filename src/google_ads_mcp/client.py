@@ -7,6 +7,7 @@ import os
 from functools import lru_cache
 from typing import Any
 
+from google.ads.googleads.client import _DEFAULT_VERSION as ADS_API_VERSION
 from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
@@ -100,13 +101,16 @@ def _client_from_settings(
 ) -> GoogleAdsClient:
     yaml_path = settings.resolved_yaml_path()
     if yaml_path is not None:
-        logger.info("Loading Google Ads client from %s", yaml_path)
-        return _apply_login(GoogleAdsClient.load_from_storage(str(yaml_path)), login_override)
+        logger.info("Loading Google Ads client from %s (API %s)", yaml_path, ADS_API_VERSION)
+        return _apply_login(
+            GoogleAdsClient.load_from_storage(str(yaml_path), version=ADS_API_VERSION),
+            login_override,
+        )
 
     adc = settings.load_adc()
     if adc is not None:
         adc_path = settings.resolved_adc_path()
-        logger.info("Loading Google Ads client from ADC %s", adc_path)
+        logger.info("Loading Google Ads client from ADC %s (API %s)", adc_path, ADS_API_VERSION)
         config = client_config_from_adc(adc, settings)
         if login_override:
             config["login_customer_id"] = login_override
@@ -114,7 +118,10 @@ def _client_from_settings(
             config.pop("login_customer_id", None)
         if config.get("use_application_default_credentials") and adc_path is not None:
             os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(adc_path))
-        return _apply_login(GoogleAdsClient.load_from_dict(config), login_override)
+        return _apply_login(
+            GoogleAdsClient.load_from_dict(config, version=ADS_API_VERSION),
+            login_override,
+        )
 
     if not settings.developer_token:
         raise AdsError(
@@ -136,7 +143,11 @@ def _client_from_settings(
     }
     if login_override:
         config["login_customer_id"] = login_override
-    return _apply_login(GoogleAdsClient.load_from_dict(config), login_override)
+    logger.info("Loading Google Ads client from env (API %s)", ADS_API_VERSION)
+    return _apply_login(
+        GoogleAdsClient.load_from_dict(config, version=ADS_API_VERSION),
+        login_override,
+    )
 
 
 @lru_cache(maxsize=8)

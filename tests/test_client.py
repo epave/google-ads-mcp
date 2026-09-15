@@ -1,7 +1,21 @@
 from types import SimpleNamespace
 
-from google_ads_mcp.client import get_client, reset_client_cache, resolve_login_customer_id
+from google.ads.googleads.client import _DEFAULT_VERSION, _VALID_API_VERSIONS
+
+from google_ads_mcp.client import (
+    ADS_API_VERSION,
+    get_client,
+    reset_client_cache,
+    resolve_login_customer_id,
+)
 from google_ads_mcp.config import Settings
+from tests.fakes import fake_ads_client
+
+
+def test_ads_api_version_tracks_library_default() -> None:
+    assert ADS_API_VERSION == _DEFAULT_VERSION
+    assert ADS_API_VERSION == _VALID_API_VERSIONS[0]
+    assert fake_ads_client().version == ADS_API_VERSION
 
 
 def test_resolve_login_uses_settings_unless_overridden() -> None:

@@ -5,9 +5,9 @@ import duckdb
 from google_ads_mcp.store import Store
 
 
-def test_duckdb_is_2_0_alpha() -> None:
+def test_duckdb_is_2_0() -> None:
     version = duckdb.version()
-    assert "2.0.0-alpha" in version or "2.0.0" in version
+    assert "2.0.0" in version
 
 
 def test_audit_and_preview_roundtrip(tmp_path: Path) -> None:
