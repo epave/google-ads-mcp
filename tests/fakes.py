@@ -3,10 +3,13 @@
 from google.ads.googleads.client import GoogleAdsClient
 from google.oauth2.credentials import Credentials
 
+from google_ads_mcp.client import ADS_API_VERSION
+
 
 def fake_ads_client() -> GoogleAdsClient:
     return GoogleAdsClient(
         credentials=Credentials(token="test-token"),
         developer_token="test-developer-token",
         use_proto_plus=True,
+        version=ADS_API_VERSION,
     )

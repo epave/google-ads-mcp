@@ -166,8 +166,10 @@ def budget_operation(
 
 def default_dates(start_days_from_now: int = 1, duration_days: int | None = None) -> tuple[str, str | None]:
     start = date.today() + timedelta(days=start_days_from_now)
-    start_str = start.strftime("%Y%m%d 00:00:00")
+    # Google Ads API v21+ Campaign.start_date_time / end_date_time:
+    # customer's timezone, "yyyy-MM-dd HH:mm:ss".
+    start_str = start.strftime("%Y-%m-%d 00:00:00")
     if duration_days is None:
         return start_str, None
     end = start + timedelta(days=duration_days)
-    return start_str, end.strftime("%Y%m%d 23:59:59")
+    return start_str, end.strftime("%Y-%m-%d 23:59:59")

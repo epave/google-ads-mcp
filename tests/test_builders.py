@@ -1,5 +1,8 @@
+import re
+
 import pytest
 
+from google_ads_mcp.builders.common import default_dates
 from google_ads_mcp.builders.display import build_display_campaign
 from google_ads_mcp.builders.pmax import build_asset_group_text_ops, build_pmax_campaign
 from google_ads_mcp.builders.search import build_search_campaign
@@ -51,7 +54,14 @@ def test_search_builder_creates_paused_campaign() -> None:
     campaign = operations[1].campaign_operation.create
     assert campaign.status == client.enums.CampaignStatusEnum.PAUSED
     assert campaign.advertising_channel_type == client.enums.AdvertisingChannelTypeEnum.SEARCH
+    assert campaign.start_date_time == default_dates()[0]
     assert any(op.ad_group_criterion_operation.create.keyword.text == "running shoes" for op in operations)
+
+
+def test_default_dates_use_v25_iso_format() -> None:
+    start, end = default_dates(duration_days=7)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} 00:00:00", start)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} 23:59:59", end)
 
 
 def test_display_and_pmax_builders_are_paused() -> None:

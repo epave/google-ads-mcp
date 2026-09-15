@@ -9,11 +9,11 @@ New campaigns are created **PAUSED**. Writes default to a preview + `confirm_tok
 ## Stack
 
 - [uv](https://docs.astral.sh/uv/)
-- [FastMCP](https://gofastmcp.com/)
-- Official [google-ads](https://github.com/googleads/google-ads-python) Python client
+- [FastMCP 4](https://gofastmcp.com/)
+- Official [google-ads](https://github.com/googleads/google-ads-python) Python client against **Google Ads API v25** (library default in `google-ads` 32.x)
 - **DuckDB 2.0 alpha** for the local audit log, preview tokens, and dashboard snapshots (not live campaign state)
 
-DuckDB 2.0 is not stable yet (GA targeted late October 2026). This project installs the current `--pre` Python wheel, which bundles DuckDB `2.0.0-alpha`. Payloads use the 2.0 `VARIANT` type. Pin or upgrade the pre-release as you like; rollback is `duckdb==1.5.5` if the alpha breaks.
+DuckDB 2.0 is not stable yet (GA targeted late October 2026). This project installs the current `--pre` Python wheel (`duckdb>=2.0.0.dev0`). Payloads use the 2.0 `VARIANT` type.
 
 ## Prerequisites
 
