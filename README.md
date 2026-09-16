@@ -137,6 +137,9 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 - `get_impression_share_summary` — search / top / absolute-top share, lost to budget vs rank, period-over-period
 - `get_campaign_dashboard` — running campaigns, spend, CPA, alerts, vs last snapshot
 - `get_local_audit` — DuckDB write history
+- `list_user_lists` — remarketing lists, Display size, 100-user eligibility
+- `list_audiences` — reusable Audience resources
+- `get_demand_gen_readiness` — pre-enable checks for Demand Gen
 
 **Audience insights** (off until `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`; Google allowlist required)
 
@@ -151,14 +154,17 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 **Create / expand** (campaigns, ad groups, and keywords default PAUSED)
 
 - `create_search_campaign` — budget + campaign + ad group + RSA + keywords
-- `create_display_campaign` — needs image assets (1.91:1 and 1:1)
+- `create_display_campaign` — legacy Responsive Display Ad path (do not use for Demand Gen)
 - `create_pmax_campaign` — standard Performance Max, not retail/Merchant Center
+- `create_demand_gen_campaign` — paused Demand Gen + multi-asset ad, Display-only channels, audience, ad-group geo/language
+- `create_audience` / `attach_audience_to_ad_group` — reusable Audience from user lists
+- `set_campaign_conversion_actions` — campaign custom conversion goal (Purchase-only bidding)
 - `upload_image_asset`, `create_ad_group`, `add_keywords` (pass `status=ENABLED` only if you intend to serve immediately)
 - `update_responsive_search_ad` — replace RSA headlines/descriptions (headlines ≤30 chars, descriptions ≤90)
 - `add_campaign_locations` / `add_campaign_languages` — geo (e.g. `2840` US) and language (e.g. `1000` English)
 - `add_asset_group_text` — add headlines/descriptions to a PMax asset group
 
-Shopping, Demand Gen, Video, and App campaign *creation* are out of scope. Those types can still be listed, reported, paused, and enabled.
+Shopping, Video, and App campaign *creation* are out of scope. Those types can still be listed, reported, paused, and enabled. GA4 event audiences should be created in GA4 and imported; `list_user_lists` consumes the Ads copies.
 
 ## Practical examples
 

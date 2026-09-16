@@ -115,6 +115,7 @@ def apply_bidding(
     bidding_strategy: str,
     target_cpa: float | None = None,
     target_roas: float | None = None,
+    target_cpc: float | None = None,
 ) -> None:
     strategy = bidding_strategy.strip().upper()
     if strategy in {"MANUAL_CPC", "MANUALCPC"}:
@@ -122,6 +123,8 @@ def apply_bidding(
         return
     if strategy in {"MAXIMIZE_CLICKS", "TARGET_SPEND", "MAXIMIZECLICKS"}:
         campaign.target_spend.target_spend_micros = 0
+        if target_cpc is not None:
+            campaign.target_spend.cpc_bid_ceiling_micros = to_micros(target_cpc)
         return
     if strategy in {"MAXIMIZE_CONVERSIONS", "MAXIMIZECONVERSIONS"}:
         campaign.maximize_conversions = client.get_type("MaximizeConversions")

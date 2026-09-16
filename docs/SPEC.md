@@ -13,7 +13,7 @@ Agents (Claude Code, Codex, Cursor) manage Google Ads from MCP:
 - Official-parity reads: `list_accessible_customers`, `search`, `get_resource_metadata`
 - Convenience lists + MCP dashboard (`get_campaign_dashboard`)
 - Pause/enable, budget, bidding
-- Create/modify Search, Display, and standard Performance Max
+- Create/modify Search, Display, standard Performance Max, and Demand Gen
 - Writes gated: disabled by default, preview + `confirm_token`, creates PAUSED
 - Official Insights reads ([overview](https://developers.google.com/google-ads/api/docs/insights/overview)):
   - Audience insights (`AudienceInsightsService`, allowlisted)
@@ -37,3 +37,4 @@ Insights tools are reads, except `generate_insights_finder_report`, which create
 5. Image assets, Display, PMax
 6. Host docs + unit tests (no live API in CI)
 7. Insights API tools (audience, creator, search-term categories) — issue #9
+8. Demand Gen + Audience resources + campaign conversion goals — issue #17
