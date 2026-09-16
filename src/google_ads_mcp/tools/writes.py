@@ -50,7 +50,8 @@ def set_campaign_status(
 
     Defaults to dry_run. Re-call with the returned confirm_token to apply.
     Writes require GOOGLE_ADS_WRITE_ENABLED=true.
-    REMOVED permanently deletes the campaign and requires force=true.
+    REMOVED permanently deletes the campaign via CampaignOperation.remove and
+    requires force=true. ENABLED/PAUSED update campaign.status.
     """
     cid = clean_customer_id(customer_id)
     status, args = _status_args({"campaign_id": str(campaign_id)}, status, force, login_customer_id)
@@ -68,10 +69,14 @@ def set_campaign_status(
     client = get_client(login_customer_id)
     service = client.get_service("CampaignService")
     operation = client.get_type("CampaignOperation")
-    campaign = operation.update
-    campaign.resource_name = service.campaign_path(cid, campaign_id)
-    campaign.status = status_enum(client, "CampaignStatusEnum", status)
-    apply_update_mask(client, operation, campaign)
+    resource_name = service.campaign_path(cid, campaign_id)
+    if status == "REMOVED":
+        operation.remove = resource_name
+    else:
+        campaign = operation.update
+        campaign.resource_name = resource_name
+        campaign.status = status_enum(client, "CampaignStatusEnum", status)
+        apply_update_mask(client, operation, campaign)
     response = run_ads_call(service.mutate_campaigns, customer_id=cid, operations=[operation])
     resource_name = response.results[0].resource_name
     get_store().record_audit(
