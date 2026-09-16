@@ -51,6 +51,11 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _CHANNEL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EMERGING_GROWTH = 0.25
+CATCH_ALL_CATEGORY_LABEL = "Uncategorized"
+_CATEGORY_LABEL_KEYS = (
+    "campaign_search_term_insight.category_label",
+    "customer_search_term_insight.category_label",
+)
 # Customer query keeps search_impression_share only. Top/lost-share fields stay on campaign
 # rows to avoid the live incompatible-field combo on FROM customer.
 CUSTOMER_IMPRESSION_SHARE_METRICS = ("metrics.search_impression_share",)
@@ -102,7 +107,7 @@ def _clean(value: Any) -> Any:
     if isinstance(value, dict):
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
-            name = "type" if key == "type_" else key
+            name = {"type_": "type", "min_": "min", "max_": "max"}.get(key, key)
             nested = _clean(item)
             if nested in ("", None, [], {}):
                 continue
@@ -840,9 +845,10 @@ def search_term_insight_terms_query(
     date_range: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
-    limit: int = 100,
     when: str | None = None,
 ) -> str:
+    # LIMIT and ORDER BY are illegal with segments.search_term
+    # (LIMIT_NOT_ALLOWED_WITH_SEGMENTS / SORTING_NOT_ALLOWED_WITH_SEGMENTS).
     clause = when or date_condition(date_range, start_date, end_date)
     if campaign_id:
         return (
@@ -851,16 +857,19 @@ def search_term_insight_terms_query(
             "segments.search_term, metrics.impressions, metrics.clicks, metrics.conversions, "
             "metrics.conversions_value FROM campaign_search_term_insight WHERE "
             f"{clause} AND campaign_search_term_insight.campaign_id = {int(campaign_id)} "
-            f"AND campaign_search_term_insight.id = {int(insight_id)} "
-            f"ORDER BY metrics.impressions DESC LIMIT {int(limit)}"
+            f"AND campaign_search_term_insight.id = {int(insight_id)}"
         )
     return (
         "SELECT customer_search_term_insight.id, customer_search_term_insight.category_label, "
         "segments.search_subcategory, segments.search_term, metrics.impressions, metrics.clicks, "
         "metrics.conversions, metrics.conversions_value FROM customer_search_term_insight WHERE "
-        f"{clause} AND customer_search_term_insight.id = {int(insight_id)} "
-        f"ORDER BY metrics.impressions DESC LIMIT {int(limit)}"
+        f"{clause} AND customer_search_term_insight.id = {int(insight_id)}"
     )
+
+
+def rank_search_term_insight_rows(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    ranked = sorted(rows, key=lambda row: as_float(row.get("metrics.impressions")) or 0.0, reverse=True)
+    return [normalize_search_term_insight_row(row) for row in ranked[: max(0, int(limit))]]
 
 
 def as_float(value: Any) -> float | None:
@@ -870,11 +879,12 @@ def as_float(value: Any) -> float | None:
     if isinstance(value, dict):
         if "value" in value:
             return as_float(value["value"])
-        lo, hi = value.get("min"), value.get("max")
+        hi = value.get("max", value.get("max_"))
+        lo = value.get("min", value.get("min_"))
         if hi is not None:
-            return float(hi)
+            return as_float(hi)
         if lo is not None:
-            return float(lo)
+            return as_float(lo)
         return None
     try:
         return float(value)
@@ -882,12 +892,46 @@ def as_float(value: Any) -> float | None:
         return None
 
 
+def search_volume_range(row: dict[str, Any]) -> dict[str, int] | None:
+    raw = row.get("metrics.search_volume")
+    lo = hi = None
+    if isinstance(raw, dict):
+        lo = raw.get("min", raw.get("min_"))
+        hi = raw.get("max", raw.get("max_"))
+    elif raw is not None:
+        return None
+    else:
+        lo = row.get("metrics.search_volume.min", row.get("metrics.search_volume.min_"))
+        hi = row.get("metrics.search_volume.max", row.get("metrics.search_volume.max_"))
+    bounds: dict[str, int] = {}
+    lo_f, hi_f = as_float(lo), as_float(hi)
+    if lo_f is not None:
+        bounds["min"] = int(lo_f)
+    if hi_f is not None:
+        bounds["max"] = int(hi_f)
+    return bounds or None
+
+
+def normalize_search_term_insight_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    for key in _CATEGORY_LABEL_KEYS:
+        if key not in out:
+            continue
+        label = out[key]
+        if label is None or str(label).strip() == "":
+            out[key] = CATCH_ALL_CATEGORY_LABEL
+    volume = search_volume_range(out)
+    if volume:
+        out["metrics.search_volume"] = volume
+    return out
+
+
 def _volume_bounds(row: dict[str, Any] | None) -> tuple[float | None, float | None]:
     if not row:
         return None, None
-    raw = row.get("metrics.search_volume")
-    if isinstance(raw, dict) and ("min" in raw or "max" in raw):
-        return as_float(raw.get("min")), as_float(raw.get("max"))
+    volume = search_volume_range(row)
+    if volume:
+        return as_float(volume.get("min")), as_float(volume.get("max"))
     parsed = _metric(row, "metrics.search_volume", "metrics.impressions")
     return parsed, parsed
 
@@ -917,9 +961,10 @@ def annotate_emerging(
     *,
     growth: float = EMERGING_GROWTH,
 ) -> list[dict[str, Any]]:
-    previous = {insight_row_key(row): row for row in previous_rows}
+    previous = {insight_row_key(row): normalize_search_term_insight_row(row) for row in previous_rows}
     annotated: list[dict[str, Any]] = []
     for row in current_rows:
+        row = normalize_search_term_insight_row(row)
         prior = previous.get(insight_row_key(row))
         cur_lo, cur_hi = _volume_bounds(row)
         prior_lo, prior_hi = _volume_bounds(prior)

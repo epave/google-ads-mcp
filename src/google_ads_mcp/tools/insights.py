@@ -98,8 +98,10 @@ def get_search_term_insights(
     Pass campaign_id for campaign_search_term_insight (needed for Performance Max).
     Omit it for account-level customer_search_term_insight. Then call
     get_search_term_insight_terms with a returned insight id to list terms
-    inside one category. Emerging categories are new versus the previous equal
-    window, or grew search volume by 25%+.
+    inside one category. Empty Google catch-all labels are returned as
+    Uncategorized. Search volume is a {min, max} range when Google sends bounds.
+    Emerging categories are new versus the previous equal window, or grew
+    search volume by 25%+.
     """
     account = _customer_context(customer_id, login_customer_id)
     if blocked := _manager_blocked(account):
@@ -151,7 +153,9 @@ def get_search_term_insight_terms(
     """Search terms inside one Search term insights category.
 
     campaign_id plus insight_id is required for campaign-level / PMax terms.
-    Account-level categories only need insight_id.
+    Account-level categories only need insight_id. GAQL cannot LIMIT or ORDER BY
+    while segmenting by search term, so `limit` is applied after ranking by
+    impressions.
     """
     account = _customer_context(customer_id, login_customer_id)
     if blocked := _manager_blocked(account):
@@ -163,10 +167,12 @@ def get_search_term_insight_terms(
     query = ads_insights.search_term_insight_terms_query(
         insight_id=insight_id,
         campaign_id=campaign_id,
-        limit=limit,
         when=ads_insights.between_condition(start, end),
     )
-    rows = search(cid, query, login_customer_id=login_customer_id)
+    rows = ads_insights.rank_search_term_insight_rows(
+        search(cid, query, login_customer_id=login_customer_id),
+        limit,
+    )
     return {"count": len(rows), "search_terms": rows, "query": query}
 
 
