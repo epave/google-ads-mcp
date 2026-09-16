@@ -117,6 +117,7 @@ claude mcp add google-ads -- uv run --directory /ABS/PATH/TO/google-ads-mcp goog
 | Remove entity | blocked | `REMOVED` on status tools requires `force=true` |
 | Local store | `~/.google-ads-mcp/state.duckdb` | `GOOGLE_ADS_MCP_DB` |
 | Image uploads | cwd | `GOOGLE_ADS_ASSET_ROOT` |
+| Audience / creator insights | off | `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true` (Google allowlist required) |
 
 Typical write: call the tool with `dry_run=true` → inspect the preview → call again with the same arguments, `dry_run=false`, and `confirm_token`. Status is stored uppercase (`paused` and `PAUSED` are the same token). New campaigns, ad groups, and keywords stay **PAUSED**; enabling is a second call. Do not set `GOOGLE_ADS_SKIP_CONFIRM=true` in an agent host — that skips the preview and mutates immediately.
 
@@ -132,8 +133,15 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 
 - `list_campaigns`, `get_campaign`, `list_ad_groups`, `list_ads`, `list_keywords`
 - `get_search_terms`, `get_change_events`, `get_recommendations`
+- `get_search_term_insights` / `get_search_term_insight_terms` — category-level Search term insights (volume, clicks, conversions, emerging vs prior window; PMax included)
+- `get_impression_share_summary` — search / top / absolute-top share, lost to budget vs rank, period-over-period
 - `get_campaign_dashboard` — running campaigns, spend, CPA, alerts, vs last snapshot
 - `get_local_audit` — DuckDB write history
+
+**Audience insights** (off until `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`; Google allowlist required)
+
+- `list_audience_insights_attributes`, `generate_audience_composition_insights`, `generate_suggested_targeting_insights`
+- Also gated: `list_insights_eligible_dates`, `generate_audience_definition`, `generate_audience_overlap_insights`, `generate_targeting_suggestion_metrics`, `generate_insights_finder_report`, `generate_creator_insights`, `generate_trending_insights`
 
 **Manage**
 
@@ -213,6 +221,7 @@ list_campaigns(customer_id="1234567890", status="ALL", limit=20)
 get_campaign(customer_id="1234567890", campaign_id="111")
 list_ad_groups(customer_id="1234567890", campaign_id="111")
 get_search_terms(customer_id="1234567890", campaign_id="111", limit=25)
+get_search_term_insights(customer_id="1234567890", campaign_id="111")
 get_recommendations(customer_id="1234567890")
 ```
 
@@ -376,7 +385,35 @@ create_pmax_campaign(
 
 Retail / Merchant Center PMax is out of v1.
 
-### 8. MCC vs client accounts
+### 8. Insights (audience, creators, search categories)
+
+Audience and YouTube creator tools stay unregistered until `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true` (the Ads account must also be allowlisted). Search term insights and impression share do not need that flag. Geo targets are numeric IDs (`2840` is the United States). Discover topics first, then pass the knowledge-graph ids through:
+
+```text
+list_audience_insights_attributes(
+  customer_id="1234567890",
+  query_text="running shoes",
+  country_location="2840",
+  entity_capabilities=["CREATOR_TOPIC_INSIGHTS"],
+)
+generate_suggested_targeting_insights(
+  customer_id="1234567890",
+  country_location="2840",
+  audience_description="runners in their 30s who buy trail shoes",
+)
+generate_creator_insights(
+  customer_id="1234567890",
+  country_locations=["2840"],
+  topics=["/m/06ntj"],
+)
+get_search_term_insights(customer_id="1234567890", campaign_id="111")
+get_search_term_insight_terms(customer_id="1234567890", campaign_id="111", insight_id="9")
+get_impression_share_summary(customer_id="1234567890")
+```
+
+`get_search_terms` is still the raw `search_term_view` list. Use `get_search_term_insights` for grouped categories (including Performance Max) and the `emerging` list for new or fast-growing demand.
+
+### 9. MCC vs client accounts
 
 `list_accessible_customers` may return both a manager and a client. Dashboards and metrics must use the **client** id. On an MCC you will get a message to pick a non-manager customer instead of a metrics API error.
 
@@ -388,7 +425,7 @@ If client-account calls fail with “login-customer-id must be set”, pass the 
 GOOGLE_ADS_LOGIN_CUSTOMER_ID=0000000000
 ```
 
-### 9. See what the agent already mutated
+### 10. See what the agent already mutated
 
 ```text
 get_local_audit(limit=20)
