@@ -923,7 +923,7 @@ def annotate_emerging(
         prior = previous.get(insight_row_key(row))
         cur_lo, cur_hi = _volume_bounds(row)
         prior_lo, prior_hi = _volume_bounds(prior)
-        volume = cur_hi if cur_hi is not None else cur_lo
+        volume = cur_lo if cur_lo is not None else cur_hi
         prior_volume = prior_hi if prior_hi is not None else prior_lo
         delta = None if volume is None or prior_volume is None else volume - prior_volume
         growth_rate = None
