@@ -48,6 +48,7 @@ DEFAULT_COMPOSITION_DIMENSIONS = (
 )
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+_CHANNEL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EMERGING_GROWTH = 0.25
 IMPRESSION_SHARE_METRICS = (
     "metrics.search_impression_share",
@@ -358,8 +359,27 @@ def previous_window(start: date, end: date) -> tuple[date, date]:
     return prev_end - timedelta(days=length - 1), prev_end
 
 
+def clamp_completed_days(start: date, end: date, *, today: date | None = None) -> tuple[date, date]:
+    """Impression-share metrics are not available for the current calendar day."""
+    last_complete = (today or date.today()) - timedelta(days=1)
+    if end > last_complete:
+        end = last_complete
+    if start > end:
+        start = end
+    return start, end
+
+
 def between_condition(start: date, end: date) -> str:
     return f"segments.date BETWEEN '{start.isoformat()}' AND '{end.isoformat()}'"
+
+
+def channel_condition(channel: str | None) -> str | None:
+    if channel is None or channel.upper() == "ALL":
+        return None
+    key = channel.strip().upper()
+    if not _CHANNEL_RE.fullmatch(key):
+        raise AdsError(f"Invalid advertising_channel_type {channel!r}.")
+    return f"campaign.advertising_channel_type = '{key}'"
 
 
 def _require_month(data_month: str | None) -> str | None:
@@ -419,6 +439,8 @@ def list_audience_insights_attributes(
     if country_location:
         request.youtube_reach_location = location_info(ads, country_location)
     request.location_country_filters.extend(parse_locations(ads, location_country_filters))
+    if get_all_creator_attributes and entity_capabilities:
+        raise AdsError("get_all_creator_attributes cannot be combined with entity_capabilities.")
     if get_all_creator_attributes or entity_capabilities:
         options = request.knowledge_graph_entity_search_options
         options.get_all_creator_attributes = get_all_creator_attributes
@@ -466,6 +488,8 @@ def generate_suggested_targeting_insights(
         desc = request.audience_description
         desc.country_locations.append(location_info(ads, country_location))
         desc.audience_description = audience_description or ""
+        if marketing_objective and dimensions:
+            raise AdsError("Pass marketing_objective or dimensions, not both (they are a oneof).")
         if marketing_objective:
             desc.marketing_objective = enum_value(
                 ads, "AudienceInsightsMarketingObjectiveEnum", marketing_objective
@@ -746,6 +770,47 @@ def search_term_insights_query(
     )
 
 
+def search_term_insights_by_ids_query(
+    *,
+    insight_ids: list[int],
+    campaign_id: str | None = None,
+    when: str,
+) -> str:
+    if not insight_ids:
+        raise AdsError("insight_ids must not be empty.")
+    ids = ", ".join(str(int(item)) for item in insight_ids)
+    if campaign_id:
+        return (
+            "SELECT campaign_search_term_insight.id, campaign_search_term_insight.campaign_id, "
+            "campaign_search_term_insight.category_label, metrics.search_volume, metrics.impressions, "
+            "metrics.clicks, metrics.conversions, metrics.conversions_value "
+            "FROM campaign_search_term_insight WHERE "
+            f"{when} AND campaign_search_term_insight.campaign_id = {int(campaign_id)} "
+            f"AND campaign_search_term_insight.id IN ({ids})"
+        )
+    return (
+        "SELECT customer_search_term_insight.id, customer_search_term_insight.category_label, "
+        "metrics.search_volume, metrics.impressions, metrics.clicks, metrics.conversions, "
+        "metrics.conversions_value FROM customer_search_term_insight WHERE "
+        f"{when} AND customer_search_term_insight.id IN ({ids})"
+    )
+
+
+def insight_ids_from_rows(rows: list[dict[str, Any]]) -> list[int]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for row in rows:
+        raw = row.get("campaign_search_term_insight.id") or row.get("customer_search_term_insight.id")
+        if raw is None:
+            continue
+        value = int(raw)
+        if value in seen:
+            continue
+        seen.add(value)
+        ids.append(value)
+    return ids
+
+
 def search_term_insight_terms_query(
     *,
     insight_id: str,
@@ -754,15 +819,16 @@ def search_term_insight_terms_query(
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int = 100,
+    when: str | None = None,
 ) -> str:
-    when = date_condition(date_range, start_date, end_date)
+    clause = when or date_condition(date_range, start_date, end_date)
     if campaign_id:
         return (
             "SELECT campaign_search_term_insight.id, campaign_search_term_insight.campaign_id, "
             "campaign_search_term_insight.category_label, segments.search_subcategory, "
             "segments.search_term, metrics.impressions, metrics.clicks, metrics.conversions, "
             "metrics.conversions_value FROM campaign_search_term_insight WHERE "
-            f"{when} AND campaign_search_term_insight.campaign_id = {int(campaign_id)} "
+            f"{clause} AND campaign_search_term_insight.campaign_id = {int(campaign_id)} "
             f"AND campaign_search_term_insight.id = {int(insight_id)} "
             f"ORDER BY metrics.impressions DESC LIMIT {int(limit)}"
         )
@@ -770,7 +836,7 @@ def search_term_insight_terms_query(
         "SELECT customer_search_term_insight.id, customer_search_term_insight.category_label, "
         "segments.search_subcategory, segments.search_term, metrics.impressions, metrics.clicks, "
         "metrics.conversions, metrics.conversions_value FROM customer_search_term_insight WHERE "
-        f"{when} AND customer_search_term_insight.id = {int(insight_id)} "
+        f"{clause} AND customer_search_term_insight.id = {int(insight_id)} "
         f"ORDER BY metrics.impressions DESC LIMIT {int(limit)}"
     )
 
@@ -836,6 +902,7 @@ def impression_share_query(
     when: str,
     campaign_id: str | None = None,
     include_paused: bool = False,
+    channel: str | None = "SEARCH",
     limit: int = 100,
 ) -> str:
     fields = ["campaign.id", "campaign.name", "campaign.status", "campaign.advertising_channel_type"]
@@ -848,6 +915,9 @@ def impression_share_query(
         conditions.append(f"campaign.status IN {statuses}")
         if campaign_id:
             conditions.append(f"campaign.id = {int(campaign_id)}")
+        extra = channel_condition(channel)
+        if extra:
+            conditions.append(extra)
     query = f"SELECT {', '.join(fields)} FROM {resource} WHERE " + " AND ".join(conditions)
     if resource == "campaign":
         query += f" ORDER BY campaign.name LIMIT {int(limit)}"

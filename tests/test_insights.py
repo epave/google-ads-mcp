@@ -6,6 +6,7 @@ import pytest
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.insights import (
     annotate_emerging,
+    clamp_completed_days,
     date_condition,
     generate_creator_insights,
     generate_suggested_targeting_insights,
@@ -19,9 +20,11 @@ from google_ads_mcp.insights import (
     require_audience_insights,
     resolve_window,
     search_term_insight_terms_query,
+    search_term_insights_by_ids_query,
     search_term_insights_query,
     summarize_impression_share,
 )
+from google_ads_mcp.store import reset_store_for_tests
 from google_ads_mcp.tools import insights as insights_tools
 from tests.fakes import fake_ads_client
 
@@ -92,6 +95,14 @@ def test_windows_and_emerging_terms() -> None:
     start, end = resolve_window("LAST_7_DAYS", today=date(2026, 9, 16))
     assert (start, end) == (date(2026, 9, 9), date(2026, 9, 15))
     assert previous_window(start, end) == (date(2026, 9, 2), date(2026, 9, 8))
+    assert clamp_completed_days(date(2026, 9, 1), date(2026, 9, 16), today=date(2026, 9, 16)) == (
+        date(2026, 9, 1),
+        date(2026, 9, 15),
+    )
+    assert clamp_completed_days(date(2026, 9, 16), date(2026, 9, 16), today=date(2026, 9, 16)) == (
+        date(2026, 9, 15),
+        date(2026, 9, 15),
+    )
     rows = annotate_emerging(
         [
             {
@@ -123,31 +134,45 @@ def test_get_search_term_insights_uses_built_query(monkeypatch) -> None:
 
     def fake_search(cid, query, login_customer_id=None):
         seen.append(query)
-        if len(seen) == 1:
-            return [
-                {
-                    "campaign_search_term_insight.id": 1,
-                    "campaign_search_term_insight.campaign_id": 222,
-                    "campaign_search_term_insight.category_label": "running shoes",
-                    "metrics.search_volume": 40,
-                    "metrics.clicks": 8,
-                    "metrics.conversions": 1,
-                }
-            ]
-        return []
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        if "IN (" in query:
+            return []
+        return [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.campaign_id": 222,
+                "campaign_search_term_insight.category_label": "running shoes",
+                "metrics.search_volume": 40,
+                "metrics.clicks": 8,
+                "metrics.conversions": 1,
+            }
+        ]
 
     monkeypatch.setattr(insights_tools, "search", fake_search)
     payload = insights_tools.get_search_term_insights("123-456-7890", campaign_id="222", limit=5)
     assert payload["count"] == 1
     assert payload["emerging_count"] == 1
     assert payload["insights"][0]["emerging"] is True
-    assert len(seen) == 2
-    assert "campaign_search_term_insight.campaign_id = 222" in seen[0]
-    assert "BETWEEN" in seen[0]
+    assert any("campaign_search_term_insight.id IN (1)" in query for query in seen)
+    assert "campaign_search_term_insight.campaign_id = 222" in seen[1]
+    assert "BETWEEN" in seen[1]
+
+
+def test_search_term_insights_reject_manager(monkeypatch) -> None:
+    def fake_search(cid, query, login_customer_id=None):
+        return [{"customer.id": 1, "customer.descriptive_name": "MCC", "customer.manager": True}]
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    payload = insights_tools.get_search_term_insights("1234567890")
+    assert payload["manager"] is True
+    assert payload["count"] == 0
 
 
 def test_impression_share_summary(monkeypatch) -> None:
     def fake_search(cid, query, login_customer_id=None):
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
         if "FROM customer" in query and "2026-09-09" in query:
             return [{"metrics.search_impression_share": 0.4, "metrics.search_budget_lost_impression_share": 0.25}]
         if "FROM customer" in query:
@@ -184,7 +209,9 @@ def test_impression_share_summary(monkeypatch) -> None:
     assert payload["account"]["deltas"]["impression_share"] == -10.0
     assert payload["campaigns"][0]["top_impression_share"] == 12.0
     assert any("budget" in item for item in payload["alerts"])
-    assert "FROM campaign" in impression_share_query(resource="campaign", when="segments.date DURING LAST_7_DAYS")
+    campaign_query = impression_share_query(resource="campaign", when="segments.date DURING LAST_7_DAYS")
+    assert "FROM campaign" in campaign_query
+    assert "advertising_channel_type = 'SEARCH'" in campaign_query
     account = summarize_impression_share(
         current_account={"metrics.search_impression_share": 0.4},
         previous_account={"metrics.search_impression_share": 0.5},
@@ -258,6 +285,15 @@ def test_suggested_targeting_from_description(monkeypatch) -> None:
     assert request.audience_description.audience_description == "fathers in their 30s who enjoy fishing"
     assert request.audience_description.country_locations[0].geo_target_constant == "geoTargetConstants/2840"
     assert request.audience_description.marketing_objective.name == "AWARENESS"
+    with pytest.raises(AdsError, match="oneof"):
+        generate_suggested_targeting_insights(
+            "1234567890",
+            country_location="2840",
+            audience_description="fathers who fish",
+            marketing_objective="AWARENESS",
+            dimensions=["AFFINITY_USER_INTEREST"],
+            client=client,
+        )
 
 
 def test_creator_insights_topics_require_one_country(monkeypatch) -> None:
@@ -297,3 +333,46 @@ def test_knowledge_graph_requires_query_text() -> None:
             dimensions=["KNOWLEDGE_GRAPH"],
             client=fake_ads_client(),
         )
+
+
+def test_creator_attributes_cannot_combine_with_capability_filter() -> None:
+    with pytest.raises(AdsError, match="cannot be combined"):
+        list_audience_insights_attributes(
+            "1234567890",
+            query_text="cosmetics",
+            get_all_creator_attributes=True,
+            entity_capabilities=["CREATOR_TOPIC_INSIGHTS"],
+            client=fake_ads_client(),
+        )
+
+
+def test_insight_terms_use_resolved_window(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_search(cid, query, login_customer_id=None):
+        seen.append(query)
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        return []
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    monkeypatch.setattr(
+        insights_tools.ads_insights, "resolve_window", lambda *a, **k: (date(2026, 9, 9), date(2026, 9, 15))
+    )
+    insights_tools.get_search_term_insight_terms("1234567890", insight_id="9", campaign_id="111")
+    assert any("BETWEEN '2026-09-09' AND '2026-09-15'" in query for query in seen)
+    query = search_term_insights_by_ids_query(
+        insight_ids=[1, 2], campaign_id="111", when="segments.date BETWEEN '2026-09-02' AND '2026-09-08'"
+    )
+    assert "id IN (1, 2)" in query
+
+
+def test_insights_finder_report_previews(monkeypatch, tmp_path) -> None:
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "false")
+    monkeypatch.setenv("GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED", "true")
+    preview = insights_tools.generate_insights_finder_report("1234567890", country_locations=["2840"])
+    assert preview["status"] == "preview"
+    assert preview["confirm_token"]

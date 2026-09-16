@@ -10,7 +10,27 @@ from google_ads_mcp import insights as ads_insights
 from google_ads_mcp.config import load_settings
 from google_ads_mcp.gaql import search
 from google_ads_mcp.ids import clean_customer_id
+from google_ads_mcp.safety import SafetyGate, with_login_arg
 from google_ads_mcp.store import get_store
+
+
+def _manager_payload(customer_id: str, login_customer_id: str | None = None) -> dict[str, Any] | None:
+    cid = clean_customer_id(customer_id)
+    account = search(
+        cid,
+        "SELECT customer.id, customer.descriptive_name, customer.manager FROM customer LIMIT 1",
+        login_customer_id=login_customer_id,
+    )
+    if not (account and account[0].get("customer.manager")):
+        return None
+    name = account[0].get("customer.descriptive_name") or cid
+    return {
+        "customer_id": cid,
+        "manager": True,
+        "name": name,
+        "count": 0,
+        "alerts": [f"{name} is a manager (MCC) account. Call this tool on a client customer_id."],
+    }
 
 
 def get_search_terms(
@@ -57,6 +77,8 @@ def get_search_term_insights(
     inside one category. Emerging categories are new versus the previous equal
     window, or grew search volume by 25%+.
     """
+    if blocked := _manager_payload(customer_id, login_customer_id):
+        return blocked
     cid = clean_customer_id(customer_id)
     current_start, current_end = ads_insights.resolve_window(date_range, start_date, end_date)
     current_when = ads_insights.between_condition(current_start, current_end)
@@ -67,12 +89,15 @@ def get_search_term_insights(
     )
     rows = search(cid, query, login_customer_id=login_customer_id)
     prev_start, prev_end = ads_insights.previous_window(current_start, current_end)
-    previous_query = ads_insights.search_term_insights_query(
-        campaign_id=campaign_id,
-        limit=max(int(limit), 200),
-        when=ads_insights.between_condition(prev_start, prev_end),
-    )
-    previous_rows = search(cid, previous_query, login_customer_id=login_customer_id)
+    previous_rows: list[dict[str, Any]] = []
+    insight_ids = ads_insights.insight_ids_from_rows(rows)
+    if insight_ids:
+        previous_query = ads_insights.search_term_insights_by_ids_query(
+            insight_ids=insight_ids,
+            campaign_id=campaign_id,
+            when=ads_insights.between_condition(prev_start, prev_end),
+        )
+        previous_rows = search(cid, previous_query, login_customer_id=login_customer_id)
     insights = ads_insights.annotate_emerging(rows, previous_rows)
     emerging = [row for row in insights if row.get("emerging")]
     return {
@@ -101,14 +126,15 @@ def get_search_term_insight_terms(
     campaign_id plus insight_id is required for campaign-level / PMax terms.
     Account-level categories only need insight_id.
     """
+    if blocked := _manager_payload(customer_id, login_customer_id):
+        return blocked
     cid = clean_customer_id(customer_id)
+    start, end = ads_insights.resolve_window(date_range, start_date, end_date)
     query = ads_insights.search_term_insight_terms_query(
         insight_id=insight_id,
         campaign_id=campaign_id,
-        date_range=date_range,
-        start_date=start_date,
-        end_date=end_date,
         limit=limit,
+        when=ads_insights.between_condition(start, end),
     )
     rows = search(cid, query, login_customer_id=login_customer_id)
     return {"count": len(rows), "search_terms": rows, "query": query}
@@ -121,17 +147,23 @@ def get_impression_share_summary(
     start_date: str | None = None,
     end_date: str | None = None,
     include_paused: bool = False,
+    channel: str = "SEARCH",
     limit: int = 100,
     login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Search impression share, top/absolute-top share, and lost share from budget vs rank.
 
     Returns account and campaign rows for the current window plus deltas versus the
-    previous equal-length period. Shares are percents (0-100). Search campaigns only
-    populate these metrics; others may return null.
+    previous equal-length period. Shares are percents (0-100). Defaults to SEARCH
+    campaigns. Windows that include today are clamped to yesterday because impression
+    share is not available for the current day.
     """
+    if blocked := _manager_payload(customer_id, login_customer_id):
+        return blocked
     cid = clean_customer_id(customer_id)
-    current_start, current_end = ads_insights.resolve_window(date_range, start_date, end_date)
+    current_start, current_end = ads_insights.clamp_completed_days(
+        *ads_insights.resolve_window(date_range, start_date, end_date)
+    )
     prev_start, prev_end = ads_insights.previous_window(current_start, current_end)
     current_when = ads_insights.between_condition(current_start, current_end)
     previous_when = ads_insights.between_condition(prev_start, prev_end)
@@ -152,6 +184,7 @@ def get_impression_share_summary(
             when=current_when,
             campaign_id=campaign_id,
             include_paused=include_paused,
+            channel=channel,
             limit=limit,
         ),
         login_customer_id=login_customer_id,
@@ -163,6 +196,7 @@ def get_impression_share_summary(
             when=previous_when,
             campaign_id=campaign_id,
             include_paused=include_paused,
+            channel=channel,
             limit=limit,
         ),
         login_customer_id=login_customer_id,
@@ -410,15 +444,39 @@ def generate_insights_finder_report(
     gender: str | None = None,
     age_ranges: list[str] | None = None,
     insights_group: str | None = None,
+    dry_run: bool = True,
+    confirm_token: str | None = None,
     login_customer_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a saved Insights Finder report and return its URL.
 
-    Allowlisted. Does not mutate campaigns. Baseline is the same countries with no extra filters.
-    Requires GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true.
+    Allowlisted. Creates a remote report, so this goes through SafetyGate: preview
+    with dry_run=true, then apply with confirm_token. Writes need
+    GOOGLE_ADS_WRITE_ENABLED=true. Requires GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true.
     """
     ads_insights.require_audience_insights()
-    return ads_insights.generate_insights_finder_report(
+    cid = clean_customer_id(customer_id)
+    args = with_login_arg(
+        {
+            "country_locations": country_locations,
+            "attributes": attributes,
+            "gender": gender,
+            "age_ranges": age_ranges,
+            "insights_group": insights_group,
+        },
+        login_customer_id,
+    )
+    auth = SafetyGate().authorize_write(
+        tool="generate_insights_finder_report",
+        customer_id=cid,
+        args=args,
+        description=f"Create Insights Finder report for {cid}",
+        dry_run=dry_run,
+        confirm_token=confirm_token,
+    )
+    if auth.get("status") == "preview":
+        return auth
+    result = ads_insights.generate_insights_finder_report(
         customer_id,
         country_locations,
         attributes=attributes,
@@ -427,6 +485,13 @@ def generate_insights_finder_report(
         insights_group=insights_group,
         login_customer_id=login_customer_id,
     )
+    get_store().record_audit(
+        tool="generate_insights_finder_report",
+        action="apply",
+        customer_id=cid,
+        payload=result,
+    )
+    return result
 
 
 def generate_creator_insights(

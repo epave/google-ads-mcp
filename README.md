@@ -141,7 +141,7 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 **Audience insights** (off until `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`; Google allowlist required)
 
 - `list_audience_insights_attributes`, `generate_audience_composition_insights`, `generate_suggested_targeting_insights`
-- Also gated: `list_insights_eligible_dates`, `generate_audience_definition`, `generate_audience_overlap_insights`, `generate_targeting_suggestion_metrics`, `generate_insights_finder_report`, `generate_creator_insights`, `generate_trending_insights`
+- Also gated: `list_insights_eligible_dates`, `generate_audience_definition`, `generate_audience_overlap_insights`, `generate_targeting_suggestion_metrics`, `generate_insights_finder_report` (SafetyGate preview), `generate_creator_insights`, `generate_trending_insights`
 
 **Manage**
 
