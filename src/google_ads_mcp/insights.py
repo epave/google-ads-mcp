@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import proto
 from google.protobuf.json_format import MessageToDict
@@ -307,6 +308,16 @@ def require_audience_insights() -> None:
         )
 
 
+def account_today(time_zone: str | None = None) -> date:
+    """Calendar date in the Ads account timezone when known; otherwise the host date."""
+    if time_zone:
+        try:
+            return datetime.now(ZoneInfo(time_zone)).date()
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return date.today()
+
+
 def resolve_window(
     date_range: str | None = None,
     start_date: str | None = None,
@@ -430,6 +441,10 @@ def list_audience_insights_attributes(
         dims.append("KNOWLEDGE_GRAPH")
     if "KNOWLEDGE_GRAPH" in {item.upper() for item in dims} and not query_text and not get_all_creator_attributes:
         raise AdsError("query_text is required when listing KNOWLEDGE_GRAPH attributes (unless get_all_creator_attributes).")
+    if get_all_creator_attributes and query_text:
+        raise AdsError("get_all_creator_attributes cannot be combined with query_text.")
+    if get_all_creator_attributes and entity_capabilities:
+        raise AdsError("get_all_creator_attributes cannot be combined with entity_capabilities.")
     request = ads.get_type("ListAudienceInsightsAttributesRequest")
     request.customer_id = cid
     request.dimensions.extend(parse_dimensions(ads, dims))
@@ -439,8 +454,6 @@ def list_audience_insights_attributes(
     if country_location:
         request.youtube_reach_location = location_info(ads, country_location)
     request.location_country_filters.extend(parse_locations(ads, location_country_filters))
-    if get_all_creator_attributes and entity_capabilities:
-        raise AdsError("get_all_creator_attributes cannot be combined with entity_capabilities.")
     if get_all_creator_attributes or entity_capabilities:
         options = request.knowledge_graph_entity_search_options
         options.get_all_creator_attributes = get_all_creator_attributes
@@ -796,11 +809,18 @@ def search_term_insights_by_ids_query(
     )
 
 
+def _row_value(row: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+    return None
+
+
 def insight_ids_from_rows(rows: list[dict[str, Any]]) -> list[int]:
     ids: list[int] = []
     seen: set[int] = set()
     for row in rows:
-        raw = row.get("campaign_search_term_insight.id") or row.get("customer_search_term_insight.id")
+        raw = _row_value(row, "campaign_search_term_insight.id", "customer_search_term_insight.id")
         if raw is None:
             continue
         value = int(raw)
@@ -850,11 +870,11 @@ def _metric(row: dict[str, Any], *names: str) -> float | None:
 
 
 def insight_row_key(row: dict[str, Any]) -> str:
-    insight_id = row.get("campaign_search_term_insight.id") or row.get("customer_search_term_insight.id")
-    campaign_id = row.get("campaign_search_term_insight.campaign_id") or "customer"
-    label = row.get("campaign_search_term_insight.category_label") or row.get(
-        "customer_search_term_insight.category_label"
-    )
+    insight_id = _row_value(row, "campaign_search_term_insight.id", "customer_search_term_insight.id")
+    campaign_id = _row_value(row, "campaign_search_term_insight.campaign_id")
+    if campaign_id is None:
+        campaign_id = "customer"
+    label = _row_value(row, "campaign_search_term_insight.category_label", "customer_search_term_insight.category_label")
     if insight_id is not None:
         return f"{campaign_id}:{insight_id}"
     return f"{campaign_id}:{label or ''}"

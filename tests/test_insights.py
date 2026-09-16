@@ -5,6 +5,7 @@ import pytest
 
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.insights import (
+    account_today,
     annotate_emerging,
     clamp_completed_days,
     date_condition,
@@ -12,6 +13,8 @@ from google_ads_mcp.insights import (
     generate_suggested_targeting_insights,
     geo_target_constant,
     impression_share_query,
+    insight_ids_from_rows,
+    insight_row_key,
     insights_audience,
     list_audience_insights_attributes,
     parse_attribute,
@@ -206,6 +209,8 @@ def test_impression_share_summary(monkeypatch) -> None:
     payload = insights_tools.get_impression_share_summary("1234567890")
     assert payload["account"]["impression_share"] == 40.0
     assert payload["account"]["lost_to_budget"] == 25.0
+    assert payload["account"]["scope"] == "customer_search_network"
+    assert payload["filter_channel"] == "SEARCH"
     assert payload["account"]["deltas"]["impression_share"] == -10.0
     assert payload["campaigns"][0]["top_impression_share"] == 12.0
     assert any("budget" in item for item in payload["alerts"])
@@ -339,9 +344,18 @@ def test_creator_attributes_cannot_combine_with_capability_filter() -> None:
     with pytest.raises(AdsError, match="cannot be combined"):
         list_audience_insights_attributes(
             "1234567890",
-            query_text="cosmetics",
             get_all_creator_attributes=True,
             entity_capabilities=["CREATOR_TOPIC_INSIGHTS"],
+            client=fake_ads_client(),
+        )
+
+
+def test_creator_attributes_cannot_combine_with_query_text() -> None:
+    with pytest.raises(AdsError, match="query_text"):
+        list_audience_insights_attributes(
+            "1234567890",
+            query_text="cosmetics",
+            get_all_creator_attributes=True,
             client=fake_ads_client(),
         )
 
@@ -376,3 +390,105 @@ def test_insights_finder_report_previews(monkeypatch, tmp_path) -> None:
     preview = insights_tools.generate_insights_finder_report("1234567890", country_locations=["2840"])
     assert preview["status"] == "preview"
     assert preview["confirm_token"]
+
+
+def test_catch_all_insight_id_zero_is_kept() -> None:
+    rows = [
+        {
+            "campaign_search_term_insight.id": 0,
+            "campaign_search_term_insight.campaign_id": 222,
+            "campaign_search_term_insight.category_label": "",
+            "metrics.search_volume": 100,
+        }
+    ]
+    assert insight_ids_from_rows(rows) == [0]
+    assert insight_row_key(rows[0]) == "222:0"
+    annotated = annotate_emerging(rows, rows)
+    assert annotated[0]["is_new"] is False
+    assert annotated[0]["emerging"] is False
+
+
+def test_get_search_term_insights_keeps_catch_all_id_zero(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_search(cid, query, login_customer_id=None):
+        seen.append(query)
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        row = {
+            "campaign_search_term_insight.id": 0,
+            "campaign_search_term_insight.campaign_id": 222,
+            "campaign_search_term_insight.category_label": "",
+            "metrics.search_volume": 40,
+        }
+        return [row]
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    payload = insights_tools.get_search_term_insights("1234567890", campaign_id="222")
+    assert any("campaign_search_term_insight.id IN (0)" in query for query in seen)
+    assert payload["insights"][0]["is_new"] is False
+    assert payload["emerging_count"] == 0
+
+
+def test_search_term_windows_use_account_timezone(monkeypatch) -> None:
+    def fake_search(cid, query, login_customer_id=None):
+        if "customer.manager" in query:
+            return [
+                {
+                    "customer.id": 1,
+                    "customer.descriptive_name": "Acme",
+                    "customer.manager": False,
+                    "customer.time_zone": "Pacific/Auckland",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    payload = insights_tools.get_search_term_insights("1234567890")
+    today = account_today("Pacific/Auckland")
+    start, end = resolve_window("LAST_7_DAYS", today=today)
+    assert payload["current_period"] == {"start": start.isoformat(), "end": end.isoformat()}
+    assert account_today("Not/AZone") == date.today()
+
+
+def test_impression_share_keeps_campaigns_when_account_query_fails(monkeypatch) -> None:
+    def fake_search(cid, query, login_customer_id=None):
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        if "FROM customer" in query:
+            raise AdsError("customer metrics unavailable")
+        return [
+            {
+                "campaign.id": 9,
+                "campaign.name": "Search",
+                "metrics.search_impression_share": 0.3,
+            }
+        ]
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    monkeypatch.setattr(
+        insights_tools.ads_insights, "resolve_window", lambda *a, **k: (date(2026, 9, 9), date(2026, 9, 15))
+    )
+    payload = insights_tools.get_impression_share_summary("1234567890")
+    assert payload["campaigns"][0]["campaign_id"] == 9
+    assert payload["account"]["impression_share"] is None
+    assert any("unavailable" in item for item in payload["alerts"])
+
+
+def test_impression_share_skips_account_for_non_search_channel(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_search(cid, query, login_customer_id=None):
+        seen.append(query)
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        return []
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    monkeypatch.setattr(
+        insights_tools.ads_insights, "resolve_window", lambda *a, **k: (date(2026, 9, 9), date(2026, 9, 15))
+    )
+    payload = insights_tools.get_impression_share_summary("1234567890", channel="DISPLAY")
+    assert payload["account"] is None
+    assert payload["filter_channel"] == "DISPLAY"
+    assert not any("search_impression_share" in query and "FROM customer" in query for query in seen)
