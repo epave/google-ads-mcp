@@ -153,6 +153,7 @@ def test_search_volume_range_message_is_numeric() -> None:
     )
     assert overlapping[0]["volume_delta"] == 80.0
     assert overlapping[0]["previous_search_volume"] == 120.0
+    assert overlapping[0]["volume_growth"] == round(100 / 120 - 1, 4)
     assert overlapping[0]["is_new"] is False
     assert overlapping[0]["emerging"] is False
     grew = annotate_emerging(
@@ -172,6 +173,7 @@ def test_search_volume_range_message_is_numeric() -> None:
         ],
     )
     assert grew[0]["emerging"] is True
+    assert grew[0]["volume_growth"] == round(200 / 120 - 1, 4)
 
 
 def test_get_search_term_insights_uses_built_query(monkeypatch) -> None:

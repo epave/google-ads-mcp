@@ -51,7 +51,8 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _CHANNEL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EMERGING_GROWTH = 0.25
-# FROM customer rejects lost-to-budget/rank and top/absolute-top share; those stay on campaign rows.
+# Customer query keeps search_impression_share only. Top/lost-share fields stay on campaign
+# rows to avoid the live incompatible-field combo on FROM customer.
 CUSTOMER_IMPRESSION_SHARE_METRICS = ("metrics.search_impression_share",)
 CAMPAIGN_IMPRESSION_SHARE_METRICS = CUSTOMER_IMPRESSION_SHARE_METRICS + (
     "metrics.search_top_impression_share",
@@ -926,12 +927,10 @@ def annotate_emerging(
         prior_volume = prior_hi if prior_hi is not None else prior_lo
         delta = None if volume is None or prior_volume is None else volume - prior_volume
         growth_rate = None
-        if volume is not None and prior_volume not in (None, 0):
-            growth_rate = (volume - prior_volume) / prior_volume
+        if cur_lo is not None and prior_hi not in (None, 0):
+            growth_rate = cur_lo / prior_hi - 1
         is_new = prior is None
-        range_grew = (
-            cur_lo is not None and prior_hi not in (None, 0) and cur_lo >= prior_hi * (1 + growth)
-        )
+        range_grew = growth_rate is not None and growth_rate >= growth
         annotated.append(
             {
                 **row,
