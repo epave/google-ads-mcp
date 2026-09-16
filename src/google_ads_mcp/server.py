@@ -23,7 +23,9 @@ GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true (Google allowlist required).
 
 Writes are off until GOOGLE_ADS_WRITE_ENABLED=true. New campaigns are created
 PAUSED. Mutates default to dry_run and return a confirm_token; call again with
-that token to apply. Start with a test account.
+that token to apply. Demand Gen uses create_demand_gen_campaign (not the
+Display builder) plus list_user_lists / create_audience. Start with a test
+account.
 
 Typical flow:
 1. list_accessible_customers
