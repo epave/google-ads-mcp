@@ -51,8 +51,10 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 _CHANNEL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EMERGING_GROWTH = 0.25
-IMPRESSION_SHARE_METRICS = (
-    "metrics.search_impression_share",
+# Customer query keeps search_impression_share only. Top/lost-share fields stay on campaign
+# rows to avoid the live incompatible-field combo on FROM customer.
+CUSTOMER_IMPRESSION_SHARE_METRICS = ("metrics.search_impression_share",)
+CAMPAIGN_IMPRESSION_SHARE_METRICS = CUSTOMER_IMPRESSION_SHARE_METRICS + (
     "metrics.search_top_impression_share",
     "metrics.search_absolute_top_impression_share",
     "metrics.search_budget_lost_impression_share",
@@ -861,11 +863,40 @@ def search_term_insight_terms_query(
     )
 
 
+def as_float(value: Any) -> float | None:
+    """Coerce Ads metrics to float. SearchVolumeRange uses max when both bounds exist."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        if "value" in value:
+            return as_float(value["value"])
+        lo, hi = value.get("min"), value.get("max")
+        if hi is not None:
+            return float(hi)
+        if lo is not None:
+            return float(lo)
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _volume_bounds(row: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    if not row:
+        return None, None
+    raw = row.get("metrics.search_volume")
+    if isinstance(raw, dict) and ("min" in raw or "max" in raw):
+        return as_float(raw.get("min")), as_float(raw.get("max"))
+    parsed = _metric(row, "metrics.search_volume", "metrics.impressions")
+    return parsed, parsed
+
+
 def _metric(row: dict[str, Any], *names: str) -> float | None:
     for name in names:
-        value = row.get(name)
-        if value is not None:
-            return float(value)
+        parsed = as_float(row.get(name))
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -890,30 +921,34 @@ def annotate_emerging(
     annotated: list[dict[str, Any]] = []
     for row in current_rows:
         prior = previous.get(insight_row_key(row))
-        volume = _metric(row, "metrics.search_volume", "metrics.impressions")
-        prior_volume = _metric(prior, "metrics.search_volume", "metrics.impressions") if prior else None
+        cur_lo, cur_hi = _volume_bounds(row)
+        prior_lo, prior_hi = _volume_bounds(prior)
+        volume = cur_lo if cur_lo is not None else cur_hi
+        prior_volume = prior_hi if prior_hi is not None else prior_lo
         delta = None if volume is None or prior_volume is None else volume - prior_volume
         growth_rate = None
-        if volume is not None and prior_volume not in (None, 0):
-            growth_rate = (volume - prior_volume) / prior_volume
+        if cur_lo is not None and prior_hi not in (None, 0):
+            growth_rate = cur_lo / prior_hi - 1
         is_new = prior is None
+        range_grew = growth_rate is not None and growth_rate >= growth
         annotated.append(
             {
                 **row,
-                "previous_search_volume": None if prior is None else prior.get("metrics.search_volume"),
+                "previous_search_volume": prior_volume,
                 "volume_delta": delta,
                 "volume_growth": None if growth_rate is None else round(growth_rate, 4),
                 "is_new": is_new,
-                "emerging": is_new or (growth_rate is not None and growth_rate >= growth),
+                "emerging": is_new or range_grew,
             }
         )
     return annotated
 
 
 def share_pct(value: Any) -> float | None:
-    if value is None:
+    parsed = as_float(value)
+    if parsed is None:
         return None
-    return round(float(value) * 100, 1)
+    return round(parsed * 100, 1)
 
 
 def impression_share_query(
@@ -926,9 +961,11 @@ def impression_share_query(
     limit: int = 100,
 ) -> str:
     fields = ["campaign.id", "campaign.name", "campaign.status", "campaign.advertising_channel_type"]
+    metrics = CAMPAIGN_IMPRESSION_SHARE_METRICS
     if resource == "customer":
         fields = ["customer.id", "customer.descriptive_name"]
-    fields.extend(IMPRESSION_SHARE_METRICS)
+        metrics = CUSTOMER_IMPRESSION_SHARE_METRICS
+    fields.extend(metrics)
     conditions = [when]
     if resource == "campaign":
         statuses = "('ENABLED', 'PAUSED')" if include_paused else "('ENABLED')"

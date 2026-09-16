@@ -7,6 +7,7 @@ from google_ads_mcp.errors import AdsError
 from google_ads_mcp.insights import (
     account_today,
     annotate_emerging,
+    as_float,
     clamp_completed_days,
     date_condition,
     generate_creator_insights,
@@ -132,6 +133,50 @@ def test_windows_and_emerging_terms() -> None:
     assert rows[1]["emerging"] is False
 
 
+def test_search_volume_range_message_is_numeric() -> None:
+    assert as_float({"min": 100, "max": 200}) == 200.0
+    overlapping = annotate_emerging(
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min": 100, "max": 200},
+            }
+        ],
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min": 80, "max": 120},
+            }
+        ],
+    )
+    assert overlapping[0]["volume_delta"] == -20.0
+    assert overlapping[0]["previous_search_volume"] == 120.0
+    assert overlapping[0]["volume_growth"] == round(100 / 120 - 1, 4)
+    assert overlapping[0]["is_new"] is False
+    assert overlapping[0]["emerging"] is False
+    grew = annotate_emerging(
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min": 200, "max": 400},
+            }
+        ],
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min": 80, "max": 120},
+            }
+        ],
+    )
+    assert grew[0]["emerging"] is True
+    assert grew[0]["volume_delta"] == 80.0
+    assert grew[0]["volume_growth"] == round(200 / 120 - 1, 4)
+
+
 def test_get_search_term_insights_uses_built_query(monkeypatch) -> None:
     seen: list[str] = []
 
@@ -177,9 +222,9 @@ def test_impression_share_summary(monkeypatch) -> None:
         if "customer.manager" in query:
             return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
         if "FROM customer" in query and "2026-09-09" in query:
-            return [{"metrics.search_impression_share": 0.4, "metrics.search_budget_lost_impression_share": 0.25}]
+            return [{"metrics.search_impression_share": 0.4}]
         if "FROM customer" in query:
-            return [{"metrics.search_impression_share": 0.5, "metrics.search_budget_lost_impression_share": 0.1}]
+            return [{"metrics.search_impression_share": 0.5}]
         if "FROM campaign" in query and "2026-09-09" in query:
             return [
                 {
@@ -208,7 +253,8 @@ def test_impression_share_summary(monkeypatch) -> None:
     monkeypatch.setattr(insights_tools.ads_insights, "resolve_window", lambda *a, **k: (date(2026, 9, 9), date(2026, 9, 15)))
     payload = insights_tools.get_impression_share_summary("1234567890")
     assert payload["account"]["impression_share"] == 40.0
-    assert payload["account"]["lost_to_budget"] == 25.0
+    assert payload["account"]["lost_to_budget"] is None
+    assert payload["account"]["top_impression_share"] is None
     assert payload["account"]["scope"] == "customer_search_network"
     assert payload["filter_channel"] == "SEARCH"
     assert payload["account"]["deltas"]["impression_share"] == -10.0
@@ -217,6 +263,14 @@ def test_impression_share_summary(monkeypatch) -> None:
     campaign_query = impression_share_query(resource="campaign", when="segments.date DURING LAST_7_DAYS")
     assert "FROM campaign" in campaign_query
     assert "advertising_channel_type = 'SEARCH'" in campaign_query
+    assert "metrics.search_budget_lost_impression_share" in campaign_query
+    account_query = impression_share_query(resource="customer", when="segments.date DURING LAST_7_DAYS")
+    assert "FROM customer" in account_query
+    assert "metrics.search_impression_share" in account_query
+    assert "metrics.search_top_impression_share" not in account_query
+    assert "metrics.search_absolute_top_impression_share" not in account_query
+    assert "metrics.search_budget_lost_impression_share" not in account_query
+    assert "metrics.search_rank_lost_impression_share" not in account_query
     account = summarize_impression_share(
         current_account={"metrics.search_impression_share": 0.4},
         previous_account={"metrics.search_impression_share": 0.5},
