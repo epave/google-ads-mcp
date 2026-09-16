@@ -5,6 +5,7 @@ import pytest
 
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.insights import (
+    CATCH_ALL_CATEGORY_LABEL,
     account_today,
     annotate_emerging,
     as_float,
@@ -18,9 +19,11 @@ from google_ads_mcp.insights import (
     insight_row_key,
     insights_audience,
     list_audience_insights_attributes,
+    normalize_search_term_insight_row,
     parse_attribute,
     previous_window,
     proto_to_plain,
+    rank_search_term_insight_rows,
     require_audience_insights,
     resolve_window,
     search_term_insight_terms_query,
@@ -93,6 +96,11 @@ def test_search_term_insight_queries() -> None:
     terms = search_term_insight_terms_query(campaign_id="111", insight_id="9")
     assert "segments.search_term" in terms
     assert "campaign_search_term_insight.id = 9" in terms
+    assert "LIMIT" not in terms
+    assert "ORDER BY" not in terms
+    account_terms = search_term_insight_terms_query(insight_id="9")
+    assert "LIMIT" not in account_terms
+    assert "ORDER BY" not in account_terms
 
 
 def test_windows_and_emerging_terms() -> None:
@@ -135,6 +143,7 @@ def test_windows_and_emerging_terms() -> None:
 
 def test_search_volume_range_message_is_numeric() -> None:
     assert as_float({"min": 100, "max": 200}) == 200.0
+    assert as_float({"min_": "80", "max_": "120"}) == 120.0
     overlapping = annotate_emerging(
         [
             {
@@ -175,6 +184,44 @@ def test_search_volume_range_message_is_numeric() -> None:
     assert grew[0]["emerging"] is True
     assert grew[0]["volume_delta"] == 80.0
     assert grew[0]["volume_growth"] == round(200 / 120 - 1, 4)
+    proto_keys = annotate_emerging(
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min_": "200", "max_": "400"},
+            }
+        ],
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume": {"min_": "80", "max_": "120"},
+            }
+        ],
+    )
+    assert proto_keys[0]["metrics.search_volume"] == {"min": 200, "max": 400}
+    assert proto_keys[0]["emerging"] is True
+    flattened = annotate_emerging(
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume.min": 200,
+                "metrics.search_volume.max": 400,
+            }
+        ],
+        [
+            {
+                "campaign_search_term_insight.id": 1,
+                "campaign_search_term_insight.category_label": "trail shoes",
+                "metrics.search_volume.min": 80,
+                "metrics.search_volume.max": 120,
+            }
+        ],
+    )
+    assert flattened[0]["metrics.search_volume"] == {"min": 200, "max": 400}
+    assert flattened[0]["emerging"] is True
 
 
 def test_get_search_term_insights_uses_built_query(monkeypatch) -> None:
@@ -414,6 +461,42 @@ def test_creator_attributes_cannot_combine_with_query_text() -> None:
         )
 
 
+def test_rank_search_term_insight_rows_slices_after_impressions_sort() -> None:
+    rows = rank_search_term_insight_rows(
+        [
+            {"segments.search_term": "low", "metrics.impressions": 1, "campaign_search_term_insight.category_label": ""},
+            {"segments.search_term": "high", "metrics.impressions": 9, "campaign_search_term_insight.category_label": ""},
+            {"segments.search_term": "mid", "metrics.impressions": 4, "campaign_search_term_insight.category_label": "boots"},
+        ],
+        2,
+    )
+    assert [row["segments.search_term"] for row in rows] == ["high", "mid"]
+    assert rows[0]["campaign_search_term_insight.category_label"] == CATCH_ALL_CATEGORY_LABEL
+    assert rows[1]["campaign_search_term_insight.category_label"] == "boots"
+
+
+def test_get_search_term_insight_terms_applies_limit_in_python(monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake_search(cid, query, login_customer_id=None):
+        seen.append(query)
+        if "customer.manager" in query:
+            return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
+        return [
+            {"segments.search_term": "low", "metrics.impressions": 1, "customer_search_term_insight.category_label": ""},
+            {"segments.search_term": "high", "metrics.impressions": 9, "customer_search_term_insight.category_label": ""},
+        ]
+
+    monkeypatch.setattr(insights_tools, "search", fake_search)
+    payload = insights_tools.get_search_term_insight_terms("1234567890", insight_id="9", limit=1)
+    assert payload["count"] == 1
+    assert payload["search_terms"][0]["segments.search_term"] == "high"
+    assert payload["search_terms"][0]["customer_search_term_insight.category_label"] == CATCH_ALL_CATEGORY_LABEL
+    query = next(item for item in seen if "segments.search_term" in item)
+    assert "LIMIT" not in query
+    assert "ORDER BY" not in query
+
+
 def test_insight_terms_use_resolved_window(monkeypatch) -> None:
     seen: list[str] = []
 
@@ -460,6 +543,10 @@ def test_catch_all_insight_id_zero_is_kept() -> None:
     annotated = annotate_emerging(rows, rows)
     assert annotated[0]["is_new"] is False
     assert annotated[0]["emerging"] is False
+    assert annotated[0]["campaign_search_term_insight.category_label"] == CATCH_ALL_CATEGORY_LABEL
+    assert normalize_search_term_insight_row(rows[0])["campaign_search_term_insight.category_label"] == (
+        CATCH_ALL_CATEGORY_LABEL
+    )
 
 
 def test_get_search_term_insights_keeps_catch_all_id_zero(monkeypatch) -> None:
@@ -482,6 +569,7 @@ def test_get_search_term_insights_keeps_catch_all_id_zero(monkeypatch) -> None:
     assert any("campaign_search_term_insight.id IN (0)" in query for query in seen)
     assert payload["insights"][0]["is_new"] is False
     assert payload["emerging_count"] == 0
+    assert payload["insights"][0]["campaign_search_term_insight.category_label"] == CATCH_ALL_CATEGORY_LABEL
 
 
 def test_search_term_windows_use_account_timezone(monkeypatch) -> None:
