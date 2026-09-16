@@ -35,6 +35,8 @@ EXPECTED_TOOLS = {
     "add_campaign_languages",
     "add_asset_group_text",
     "get_local_audit",
+    "get_search_term_insights",
+    "get_impression_share_summary",
 }
 
 
@@ -155,6 +157,7 @@ def _isolate_ads_env() -> None:
         "GOOGLE_ADS_CONFIGURATION_FILE_PATH",
         "GOOGLE_ADS_ADC_PATH",
         "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
+        "GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED",
     ):
         os.environ.pop(key, None)
 
@@ -187,6 +190,7 @@ async def smoke_stdio(db_path: Path) -> dict[str, Any]:
         "GOOGLE_ADS_CONFIGURATION_FILE_PATH",
         "GOOGLE_ADS_ADC_PATH",
         "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
+        "GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED",
     ):
         env.pop(key, None)
     transport = StdioTransport(

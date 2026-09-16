@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     yaml_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_CONFIGURATION_FILE_PATH")
     adc_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_ADC_PATH")
     write_enabled: bool = Field(default=False, validation_alias="GOOGLE_ADS_WRITE_ENABLED")
+    audience_insights_enabled: bool = Field(
+        default=False, validation_alias="GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED"
+    )
     skip_confirm: bool = Field(default=False, validation_alias="GOOGLE_ADS_SKIP_CONFIRM")
     allowed_customer_ids: str | None = Field(
         default=None, validation_alias="GOOGLE_ADS_ALLOWED_CUSTOMER_IDS"

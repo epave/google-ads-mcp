@@ -15,8 +15,11 @@ INSTRUCTIONS = """
 Google Ads MCP for managing campaigns from Claude Code, Codex, and other agents.
 
 Read tools match the official Google Ads MCP: list_accessible_customers, search,
-get_resource_metadata. Additional tools list campaigns/ads/keywords and return a
-compact dashboard (get_campaign_dashboard).
+get_resource_metadata. Additional tools list campaigns/ads/keywords, return a
+compact dashboard (get_campaign_dashboard), search-term insight categories
+(get_search_term_insights), and impression share (get_impression_share_summary).
+Audience and YouTube creator tools stay hidden until
+GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true (Google allowlist required).
 
 Writes are off until GOOGLE_ADS_WRITE_ENABLED=true. New campaigns are created
 PAUSED. Mutates default to dry_run and return a confirm_token; call again with
