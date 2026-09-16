@@ -215,13 +215,14 @@ def get_impression_share_summary(
         )
         if account_error:
             extra_alerts.append(f"Account-level impression share was unavailable: {account_error}")
-        account_prev, prev_error = _search_optional(
-            cid,
-            ads_insights.impression_share_query(resource="customer", when=previous_when),
-            login_customer_id,
-        )
-        if prev_error:
-            extra_alerts.append(f"Previous-period account impression share was unavailable: {prev_error}")
+        else:
+            account_prev, prev_error = _search_optional(
+                cid,
+                ads_insights.impression_share_query(resource="customer", when=previous_when),
+                login_customer_id,
+            )
+            if prev_error:
+                extra_alerts.append(f"Previous-period account impression share was unavailable: {prev_error}")
     campaigns_now = search(
         cid,
         ads_insights.impression_share_query(

@@ -26,7 +26,7 @@ DuckDB is local audit/snapshots only. User override: **DuckDB 2.0 alpha**, not p
 
 uv + FastMCP 4 + official `google-ads` 32.x client (Google Ads API v25) + DuckDB 2.0 (`VARIANT` payloads). Stdio for local hosts. No web UI.
 
-Insights tools are read-only. Search term insights and impression share are always registered. Audience/creator tools register only when `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`. Audience/creator calls set `customer_insights_group` to `google-ads-mcp` by default. Attributes accept compact dicts (`{"entity": "/m/014trl"}`) or metadata returned by `list_audience_insights_attributes`. No live Insights API in CI — request building is unit-tested with the fake Ads client.
+Insights tools are reads, except `generate_insights_finder_report`, which creates a remote report through SafetyGate. Search term insights and impression share are always registered. Audience/creator tools register only when `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`. Audience/creator calls set `customer_insights_group` to `google-ads-mcp` by default. Attributes accept compact dicts (`{"entity": "/m/014trl"}`) or metadata returned by `list_audience_insights_attributes`. No live Insights API in CI — request building is unit-tested with the fake Ads client.
 
 ## Tasks
 

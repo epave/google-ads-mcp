@@ -452,7 +452,10 @@ def test_search_term_windows_use_account_timezone(monkeypatch) -> None:
 
 
 def test_impression_share_keeps_campaigns_when_account_query_fails(monkeypatch) -> None:
+    seen: list[str] = []
+
     def fake_search(cid, query, login_customer_id=None):
+        seen.append(query)
         if "customer.manager" in query:
             return [{"customer.id": 1, "customer.descriptive_name": "Acme", "customer.manager": False}]
         if "FROM customer" in query:
@@ -472,7 +475,11 @@ def test_impression_share_keeps_campaigns_when_account_query_fails(monkeypatch) 
     payload = insights_tools.get_impression_share_summary("1234567890")
     assert payload["campaigns"][0]["campaign_id"] == 9
     assert payload["account"]["impression_share"] is None
-    assert any("unavailable" in item for item in payload["alerts"])
+    assert [item for item in payload["alerts"] if "unavailable" in item] == [
+        "Account-level impression share was unavailable: customer metrics unavailable"
+    ]
+    customer_is = [query for query in seen if "search_impression_share" in query and "FROM customer" in query]
+    assert len(customer_is) == 1
 
 
 def test_impression_share_skips_account_for_non_search_channel(monkeypatch) -> None:
