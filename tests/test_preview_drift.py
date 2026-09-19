@@ -143,6 +143,41 @@ def test_keyword_drift_preserves_token(monkeypatch, tmp_path: Path) -> None:
         )
 
 
+def test_keyword_dry_run_rejects_confirm_token(monkeypatch, tmp_path: Path) -> None:
+    """confirm_token + dry_run=true must error, not mint a fresh preview."""
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "true")
+    monkeypatch.delenv("GOOGLE_ADS_SKIP_CONFIRM", raising=False)
+
+    live = {
+        "ad_group.id": 10,
+        "ad_group_criterion.criterion_id": 99,
+        "ad_group_criterion.status": "ENABLED",
+        "ad_group_criterion.keyword.text": "shoes",
+    }
+
+    monkeypatch.setattr(writes_mod, "search", lambda *a, **k: [live])
+    monkeypatch.setattr(writes_mod, "get_client", lambda *a, **k: object())
+
+    preview = writes_mod.set_keyword_status(
+        customer_id="1234567890",
+        ad_group_id="10",
+        criterion_id="99",
+        status="PAUSED",
+        dry_run=True,
+    )
+    with pytest.raises(AdsError, match="dry_run=false"):
+        writes_mod.set_keyword_status(
+            customer_id="1234567890",
+            ad_group_id="10",
+            criterion_id="99",
+            status="PAUSED",
+            dry_run=True,
+            confirm_token=preview["confirm_token"],
+        )
+
+
 def test_keyword_already_at_status_is_noop(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))

@@ -261,7 +261,7 @@ def set_keyword_status(
             args=args,
             description=f"Set keyword {criterion_id} to {status}",
             dry_run=True,
-            confirm_token=None,
+            confirm_token=confirm_token,
             observed_state=observed,
         )
         return _maybe_preview(auth) or auth
