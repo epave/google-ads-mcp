@@ -243,23 +243,28 @@ def set_keyword_status(
     )
     observed = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
 
-    if not dry_run and confirm_token and not _gate().settings.skip_confirm:
-        # Validate token without consuming so drift can reject safely.
-        _gate().peek_write(
-            tool="set_keyword_status",
-            customer_id=cid,
-            args=args,
-            confirm_token=confirm_token,
-        )
+    if not dry_run:
+        # Token peek is confirmation-mode only; live no-op / drift runs in both modes.
+        if confirm_token and not _gate().settings.skip_confirm:
+            _gate().peek_write(
+                tool="set_keyword_status",
+                customer_id=cid,
+                args=args,
+                confirm_token=confirm_token,
+            )
         live = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
         if _keyword_disappeared(live, target_status=status):
+            if confirm_token and not _gate().settings.skip_confirm:
+                raise AdsError(
+                    f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
+                    "State drifted since preview; confirm_token was not consumed. "
+                    "Preview again if you still need a change."
+                )
             raise AdsError(
-                f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
-                "State drifted since preview; confirm_token was not consumed. "
-                "Preview again if you still need a change."
+                f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
             )
         if str(live.get("status") or "").upper() == status:
-            # Idempotent no-op: consume token, skip mutate.
+            # Idempotent no-op: consume token when required, skip mutate.
             _gate().authorize_write(
                 tool="set_keyword_status",
                 customer_id=cid,
@@ -285,6 +290,7 @@ def set_keyword_status(
                 "resource_name": None,
                 "observed_state": live,
             }
+        observed = live
 
     auth = _gate().authorize_write(
         tool="set_keyword_status",

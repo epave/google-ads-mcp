@@ -43,8 +43,8 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
 
     Presence flags mirror client load order (YAML → ADC → env): only the active
     source is inspected, not OR'd across files and environment.
-    Explicit missing YAML/ADC paths are reported as config errors (no fallback),
-    matching ``_client_from_settings``.
+    Explicit missing paths error only when that source would actually be used
+    (YAML first, then ADC), matching ``_client_from_settings``.
     """
     empty = {
         "developer_token_present": False,
@@ -53,7 +53,7 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
         "login_customer_id_configured": False,
     }
 
-    # Explicit paths that do not exist: client raises and never falls through.
+    # Explicit YAML path that does not exist: client raises and never falls through.
     if settings.yaml_path is not None and not settings.yaml_path.exists():
         return {
             "config_source": "yaml",
@@ -64,31 +64,14 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
             "adc_present": False,
             **empty,
         }
-    if (
-        settings.yaml_path is None
-        and settings.adc_path is not None
-        and not settings.adc_path.exists()
-    ):
-        return {
-            "config_source": "adc",
-            "config_error": f"GOOGLE_ADS_ADC_PATH={settings.adc_path} does not exist",
-            "yaml_present": False,
-            "adc_present": False,
-            **empty,
-        }
 
     yaml_path = None
-    adc_path = None
     try:
         yaml_path = settings.resolved_yaml_path()
     except FileNotFoundError:
         yaml_path = None
-    try:
-        adc_path = settings.resolved_adc_path()
-    except FileNotFoundError:
-        adc_path = None
 
-    # Match _client_from_settings: YAML wins, then ADC, then env.
+    # YAML wins — a broken ADC path is irrelevant when YAML is available.
     if yaml_path is not None:
         source = "yaml"
         yaml_data = _load_yaml_config(yaml_path) or {}
@@ -99,7 +82,39 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
             has_refresh_token,
             has_login_customer_id,
         ) = _flags_from_mapping(yaml_data)
-    elif adc_path is not None:
+        adc_present = False
+        try:
+            adc_present = settings.resolved_adc_path() is not None
+        except FileNotFoundError:
+            adc_present = False
+        return {
+            "config_source": source,
+            "config_error": None,
+            "yaml_present": True,
+            "adc_present": adc_present,
+            "developer_token_present": has_developer_token,
+            "oauth_client_present": has_client_id and has_client_secret,
+            "refresh_token_present": has_refresh_token,
+            "login_customer_id_configured": has_login_customer_id,
+        }
+
+    # No YAML: explicit missing ADC is fatal (client would raise next).
+    if settings.adc_path is not None and not settings.adc_path.exists():
+        return {
+            "config_source": "adc",
+            "config_error": f"GOOGLE_ADS_ADC_PATH={settings.adc_path} does not exist",
+            "yaml_present": False,
+            "adc_present": False,
+            **empty,
+        }
+
+    adc_path = None
+    try:
+        adc_path = settings.resolved_adc_path()
+    except FileNotFoundError:
+        adc_path = None
+
+    if adc_path is not None:
         source = "adc"
         try:
             adc = settings.load_adc() or {}
@@ -136,7 +151,7 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
     return {
         "config_source": source,
         "config_error": None,
-        "yaml_present": yaml_path is not None,
+        "yaml_present": False,
         "adc_present": adc_path is not None,
         "developer_token_present": has_developer_token,
         "oauth_client_present": has_client_id and has_client_secret,

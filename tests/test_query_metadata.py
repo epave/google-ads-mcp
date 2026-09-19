@@ -136,6 +136,21 @@ def test_credential_health_reports_missing_explicit_yaml(tmp_path, monkeypatch) 
     assert info["credentials"]["refresh_token_present"] is False
 
 
+def test_credential_health_yaml_wins_over_missing_adc(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    yaml_path = tmp_path / "google-ads.yaml"
+    yaml_path.write_text(
+        "developer_token: yaml-dev\nclient_id: c\nclient_secret: s\nrefresh_token: r\n",
+        encoding="utf-8",
+    )
+    missing_adc = tmp_path / "missing-adc.json"
+    settings = Settings(_env_file=None, yaml_path=yaml_path, adc_path=missing_adc)
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "yaml"
+    assert info["credentials"]["config_error"] is None
+    assert info["credentials"]["developer_token_present"] is True
+
+
 def test_get_resource_metadata_respects_limit(monkeypatch) -> None:
     from types import SimpleNamespace
 

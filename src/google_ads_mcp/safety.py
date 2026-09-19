@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -9,11 +10,16 @@ from typing import Any
 from google_ads_mcp.config import Settings, load_settings
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.ids import clean_customer_id
-from google_ads_mcp.store import Store, get_store
+from google_ads_mcp.store import OBSERVED_UNSET, Store, get_store
 
 logger = logging.getLogger(__name__)
 
 CREATE_STATUSES = frozenset({"ENABLED", "PAUSED"})
+
+
+def _token_fingerprint(token: str) -> str:
+    """Non-reusable digest for audit logs — never store the live confirm_token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
 
 
 def normalize_status(status: str) -> str:
@@ -164,8 +170,16 @@ class SafetyGate:
         except ValueError as exc:
             raise AdsError(str(exc)) from exc
 
-    def refresh_preview(self, confirm_token: str, observed_state: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Extend an unused preview token's TTL and optionally refresh observed_state."""
+    def refresh_preview(
+        self,
+        confirm_token: str,
+        observed_state: dict[str, Any] | None | object = OBSERVED_UNSET,
+    ) -> dict[str, Any]:
+        """Extend an unused preview token's TTL and optionally refresh observed_state.
+
+        Pass ``observed_state=None`` to clear a prior snapshot; omit the argument
+        (or pass ``OBSERVED_UNSET``) to leave the stored snapshot unchanged.
+        """
         try:
             refreshed = self.store.refresh_preview(
                 confirm_token,
@@ -174,11 +188,18 @@ class SafetyGate:
             )
         except ValueError as exc:
             raise AdsError(str(exc)) from exc
+        audit_observed = (
+            None if observed_state is OBSERVED_UNSET else observed_state  # type: ignore[assignment]
+        )
         self.store.record_audit(
             tool=refreshed["tool"],
             action="refresh_preview",
             customer_id=refreshed.get("customer_id"),
-            payload={"confirm_token": confirm_token, "observed_state": observed_state},
+            payload={
+                # Never persist the live token — audit is readable via get_local_audit.
+                "confirm_token_fingerprint": _token_fingerprint(confirm_token),
+                "observed_state": audit_observed,
+            },
         )
         return {
             "status": "refreshed",
@@ -189,7 +210,7 @@ class SafetyGate:
             "customer_id": refreshed.get("customer_id"),
             "args": refreshed["args"],
             "description": refreshed.get("description"),
-            "observed_state": observed_state,
+            "observed_state": refreshed.get("observed_state"),
         }
 
     def assert_budget_increase_ok(self, current_amount: float, new_amount: float, force: bool) -> None:

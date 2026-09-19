@@ -189,6 +189,65 @@ def test_keyword_already_at_status_is_noop(monkeypatch, tmp_path: Path) -> None:
     assert mutate_calls["n"] == 0
 
 
+def test_keyword_noop_with_skip_confirm(monkeypatch, tmp_path: Path) -> None:
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("GOOGLE_ADS_SKIP_CONFIRM", "true")
+    monkeypatch.delenv("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", raising=False)
+
+    def fake_search(cid, query, login_customer_id=None):
+        return [
+            {
+                "ad_group.id": 10,
+                "ad_group_criterion.criterion_id": 99,
+                "ad_group_criterion.status": "PAUSED",
+                "ad_group_criterion.keyword.text": "shoes",
+            }
+        ]
+
+    monkeypatch.setattr(writes_mod, "search", fake_search)
+    mutate_calls = {"n": 0}
+
+    def boom(*a, **k):
+        mutate_calls["n"] += 1
+        raise AssertionError("mutate must not run for noop under skip_confirm")
+
+    monkeypatch.setattr(writes_mod, "run_ads_call", boom)
+    result = writes_mod.set_keyword_status(
+        customer_id="1234567890",
+        ad_group_id="10",
+        criterion_id="99",
+        status="PAUSED",
+        dry_run=False,
+    )
+    assert result["noop"] is True
+    assert mutate_calls["n"] == 0
+
+
+def test_refresh_preview_audit_redacts_token(tmp_path: Path) -> None:
+    store = Store(tmp_path / "db.duckdb")
+    gate = SafetyGate(_settings(), store)
+    preview = gate.authorize_write(
+        tool="set_campaign_status",
+        customer_id="1234567890",
+        args={"status": "PAUSED"},
+        description="pause",
+        dry_run=True,
+    )
+    token = preview["confirm_token"]
+    gate.refresh_preview(token)
+    events = store.list_recent_audit(limit=5)
+    refresh_events = [e for e in events if e["action"] == "refresh_preview"]
+    assert refresh_events
+    payload = refresh_events[0]["payload"]
+    assert "confirm_token" not in payload
+    assert "confirm_token_fingerprint" in payload
+    assert token not in str(payload)
+    assert payload["confirm_token_fingerprint"] != token
+
+
 def test_keyword_removed_status_is_drift(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))

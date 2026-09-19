@@ -19,6 +19,9 @@ from google_ads_mcp.config import mkdir_private
 
 logger = logging.getLogger(__name__)
 
+# Sentinel: leave preview_tokens.observed_state unchanged on refresh.
+OBSERVED_UNSET: object = object()
+
 
 def canonical_args(args: dict[str, Any]) -> str:
     return json.dumps(args, sort_keys=True, default=str, separators=(",", ":"))
@@ -208,19 +211,23 @@ class Store:
         token: str,
         *,
         ttl_seconds: int,
-        observed_state: dict[str, Any] | None = None,
+        observed_state: dict[str, Any] | None | object = OBSERVED_UNSET,
     ) -> dict[str, Any]:
-        """Extend expiry and optionally refresh observed_state for an unused token."""
+        """Extend expiry and optionally refresh observed_state for an unused token.
+
+        ``OBSERVED_UNSET`` (default) leaves the stored snapshot alone.
+        ``None`` clears it (SQL NULL). A dict replaces it.
+        """
         row = self._conn.execute(
             """
-            SELECT tool, customer_id, args, expires_at, used_at, description
+            SELECT tool, customer_id, args, expires_at, used_at, description, observed_state
             FROM preview_tokens WHERE token = ?
             """,
             [token],
         ).fetchone()
         if row is None:
             raise ValueError("Unknown confirm_token.")
-        tool, customer_id, args, expires_at, used_at, description = row
+        tool, customer_id, args, expires_at, used_at, description, stored_observed = row
         if used_at is not None:
             raise ValueError("confirm_token has already been used.")
         now = datetime.now(UTC).replace(tzinfo=None)
@@ -230,16 +237,7 @@ class Store:
                 "refresh_preview cannot revive an expired token."
             )
         new_expires = now + timedelta(seconds=ttl_seconds)
-        if observed_state is not None:
-            self._conn.execute(
-                """
-                UPDATE preview_tokens
-                SET expires_at = ?, observed_state = ?::JSON::VARIANT
-                WHERE token = ? AND used_at IS NULL
-                """,
-                [new_expires, self._variant(observed_state), token],
-            )
-        else:
+        if observed_state is OBSERVED_UNSET:
             self._conn.execute(
                 """
                 UPDATE preview_tokens SET expires_at = ?
@@ -247,6 +245,21 @@ class Store:
                 """,
                 [new_expires, token],
             )
+            result_observed = self._decode_variant(stored_observed)
+        else:
+            self._conn.execute(
+                """
+                UPDATE preview_tokens
+                SET expires_at = ?, observed_state = ?::JSON::VARIANT
+                WHERE token = ? AND used_at IS NULL
+                """,
+                [
+                    new_expires,
+                    self._variant(observed_state) if observed_state is not None else None,
+                    token,
+                ],
+            )
+            result_observed = observed_state
         return {
             "confirm_token": token,
             "tool": tool,
@@ -255,7 +268,7 @@ class Store:
             "description": description,
             "expires_at": new_expires,
             "expires_in_seconds": ttl_seconds,
-            "observed_state": observed_state,
+            "observed_state": result_observed,
         }
 
     def consume_preview(
