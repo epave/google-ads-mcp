@@ -248,6 +248,76 @@ def test_refresh_preview_audit_redacts_token(tmp_path: Path) -> None:
     assert payload["confirm_token_fingerprint"] != token
 
 
+def test_keyword_apply_observes_once(monkeypatch, tmp_path: Path) -> None:
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("GOOGLE_ADS_SKIP_CONFIRM", "true")
+    monkeypatch.delenv("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", raising=False)
+
+    calls = {"n": 0}
+
+    def fake_search(cid, query, login_customer_id=None):
+        calls["n"] += 1
+        return [
+            {
+                "ad_group.id": 10,
+                "ad_group_criterion.criterion_id": 99,
+                "ad_group_criterion.status": "ENABLED",
+                "ad_group_criterion.keyword.text": "shoes",
+            }
+        ]
+
+    monkeypatch.setattr(writes_mod, "search", fake_search)
+
+    class FakeService:
+        def ad_group_criterion_path(self, *a):
+            return "customers/1/adGroupCriteria/10~99"
+
+        def mutate_ad_group_criteria(self, **kwargs):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(results=[SimpleNamespace(resource_name="rn")])
+
+    class FakeClient:
+        def get_service(self, name):
+            return FakeService()
+
+        def get_type(self, name):
+            from tests.fakes import fake_ads_client
+
+            return fake_ads_client().get_type(name)
+
+        @property
+        def enums(self):
+            return fake_ads_client().enums
+
+    from tests.fakes import fake_ads_client
+
+    monkeypatch.setattr(writes_mod, "get_client", lambda *a, **k: FakeClient())
+    monkeypatch.setattr(
+        writes_mod,
+        "run_ads_call",
+        lambda fn, **kw: fn(**kw),
+    )
+    monkeypatch.setattr(
+        writes_mod,
+        "status_enum",
+        lambda *a, **k: fake_ads_client().enums.AdGroupCriterionStatusEnum.PAUSED,
+    )
+    monkeypatch.setattr(writes_mod, "apply_update_mask", lambda *a, **k: None)
+
+    writes_mod.set_keyword_status(
+        customer_id="1234567890",
+        ad_group_id="10",
+        criterion_id="99",
+        status="PAUSED",
+        dry_run=False,
+    )
+    assert calls["n"] == 1
+
+
 def test_keyword_removed_when_already_missing_is_noop(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))

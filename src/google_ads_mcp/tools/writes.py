@@ -252,76 +252,79 @@ def set_keyword_status(
         force,
         login_customer_id,
     )
+
+    if dry_run:
+        observed = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
+        auth = _gate().authorize_write(
+            tool="set_keyword_status",
+            customer_id=cid,
+            args=args,
+            description=f"Set keyword {criterion_id} to {status}",
+            dry_run=True,
+            confirm_token=None,
+            observed_state=observed,
+        )
+        return _maybe_preview(auth) or auth
+
+    # Apply path: peek token first (confirm mode), then one live observation.
+    if confirm_token and not _gate().settings.skip_confirm:
+        _gate().peek_write(
+            tool="set_keyword_status",
+            customer_id=cid,
+            args=args,
+            confirm_token=confirm_token,
+        )
     observed = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
-
-    if not dry_run:
-        # Token peek is confirmation-mode only; live no-op / drift runs in both modes.
+    if _keyword_disappeared(observed, target_status=status):
         if confirm_token and not _gate().settings.skip_confirm:
-            _gate().peek_write(
-                tool="set_keyword_status",
-                customer_id=cid,
-                args=args,
-                confirm_token=confirm_token,
-            )
-        live = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
-        if _keyword_disappeared(live, target_status=status):
-            if confirm_token and not _gate().settings.skip_confirm:
-                raise AdsError(
-                    f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
-                    "State drifted since preview; confirm_token was not consumed. "
-                    "Preview again if you still need a change."
-                )
             raise AdsError(
-                f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
+                f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
+                "State drifted since preview; confirm_token was not consumed. "
+                "Preview again if you still need a change."
             )
-        if _keyword_already_at_target(live, target_status=status):
-            # Idempotent no-op: consume token when required, skip mutate.
-            _gate().authorize_write(
-                tool="set_keyword_status",
-                customer_id=cid,
-                args=args,
-                description=f"Set keyword {criterion_id} to {status}",
-                dry_run=False,
-                confirm_token=confirm_token,
-                observed_state=live,
-            )
-            get_store().record_audit(
-                tool="set_keyword_status",
-                action="apply",
-                customer_id=cid,
-                payload={
-                    "planned": args,
-                    "actual": {
-                        "noop": True,
-                        "reason": "already_at_status",
-                        "live": live,
-                    },
+        raise AdsError(
+            f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
+        )
+    if _keyword_already_at_target(observed, target_status=status):
+        _gate().authorize_write(
+            tool="set_keyword_status",
+            customer_id=cid,
+            args=args,
+            description=f"Set keyword {criterion_id} to {status}",
+            dry_run=False,
+            confirm_token=confirm_token,
+            observed_state=observed,
+        )
+        get_store().record_audit(
+            tool="set_keyword_status",
+            action="apply",
+            customer_id=cid,
+            payload={
+                "planned": args,
+                "actual": {
+                    "noop": True,
+                    "reason": "already_at_status",
+                    "live": observed,
                 },
-            )
-            return {
-                "status": "applied",
-                "noop": True,
-                "reason": "already_at_status",
-                "resource_name": None,
-                "observed_state": live,
-            }
-        observed = live
+            },
+        )
+        return {
+            "status": "applied",
+            "noop": True,
+            "reason": "already_at_status",
+            "resource_name": None,
+            "observed_state": observed,
+        }
 
-    auth = _gate().authorize_write(
+    _gate().authorize_write(
         tool="set_keyword_status",
         customer_id=cid,
         args=args,
         description=f"Set keyword {criterion_id} to {status}",
-        dry_run=dry_run,
+        dry_run=False,
         confirm_token=confirm_token,
         observed_state=observed,
     )
-    if preview := _maybe_preview(auth):
-        return preview
-    if _keyword_disappeared(observed, target_status=status):
-        raise AdsError(
-            f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
-        )
     client = get_client(login_customer_id)
     service = client.get_service("AdGroupCriterionService")
     operation = client.get_type("AdGroupCriterionOperation")

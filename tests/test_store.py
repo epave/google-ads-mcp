@@ -75,3 +75,72 @@ def test_refresh_preview_preserves_observed_when_unset(tmp_path: Path) -> None:
     assert refreshed["observed_state"]["status"] == "ENABLED"
     peeked = store.peek_preview(token, tool="set_keyword_status", customer_id="123")
     assert peeked["observed_state"]["status"] == "ENABLED"
+
+
+def test_refresh_preview_fails_when_token_consumed(tmp_path: Path) -> None:
+    import pytest
+
+    store = Store(tmp_path / "state.duckdb")
+    token, _ = store.create_preview(
+        tool="set_campaign_status",
+        customer_id="123",
+        args={"status": "PAUSED"},
+        description="pause",
+        ttl_seconds=60,
+    )
+    store.consume_preview(token, tool="set_campaign_status", customer_id="123")
+    with pytest.raises(ValueError, match="already been used"):
+        store.refresh_preview(token, ttl_seconds=60)
+
+
+def test_refresh_preview_fails_when_update_claims_zero_rows(tmp_path: Path) -> None:
+    """SELECT may see unused; concurrent consume must still make refresh fail."""
+    import pytest
+
+    store = Store(tmp_path / "state.duckdb")
+    token, _ = store.create_preview(
+        tool="set_campaign_status",
+        customer_id="123",
+        args={"status": "PAUSED"},
+        description="pause",
+        ttl_seconds=60,
+        observed_state={"status": "ENABLED"},
+    )
+    real = store._conn
+    saw_select = {"done": False}
+
+    class CachedRow:
+        def __init__(self, row):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class ConnProxy:
+        def execute(self, query, parameters=None):
+            result = (
+                real.execute(query, parameters)
+                if parameters is not None
+                else real.execute(query)
+            )
+            if (
+                not saw_select["done"]
+                and "SELECT" in query
+                and "FROM preview_tokens WHERE token" in query
+            ):
+                saw_select["done"] = True
+                row = result.fetchone()
+                real.execute(
+                    "UPDATE preview_tokens SET used_at = CURRENT_TIMESTAMP WHERE token = ?",
+                    [token],
+                )
+                return CachedRow(row)
+            return result
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    store._conn = ConnProxy()  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="already been used"):
+        store.refresh_preview(token, ttl_seconds=60, observed_state={"status": "PAUSED"})
+

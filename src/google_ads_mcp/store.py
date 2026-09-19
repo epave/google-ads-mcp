@@ -227,7 +227,7 @@ class Store:
         ).fetchone()
         if row is None:
             raise ValueError("Unknown confirm_token.")
-        tool, customer_id, args, expires_at, used_at, description, stored_observed = row
+        tool, customer_id, args, expires_at, used_at, description, _stored_observed = row
         if used_at is not None:
             raise ValueError("confirm_token has already been used.")
         now = datetime.now(UTC).replace(tzinfo=None)
@@ -237,28 +237,37 @@ class Store:
                 "refresh_preview cannot revive an expired token."
             )
         new_expires = now + timedelta(seconds=ttl_seconds)
+        # Claim the unused row; fail if a concurrent consume won the race.
         if observed_state is OBSERVED_UNSET:
-            self._conn.execute(
+            claimed = self._conn.execute(
                 """
                 UPDATE preview_tokens SET expires_at = ?
                 WHERE token = ? AND used_at IS NULL
+                RETURNING tool, customer_id, args, description, observed_state
                 """,
                 [new_expires, token],
-            )
+            ).fetchone()
+            if claimed is None:
+                raise ValueError("confirm_token has already been used.")
+            tool, customer_id, args, description, stored_observed = claimed
             result_observed = self._decode_variant(stored_observed)
         else:
-            self._conn.execute(
+            claimed = self._conn.execute(
                 """
                 UPDATE preview_tokens
                 SET expires_at = ?, observed_state = ?::JSON::VARIANT
                 WHERE token = ? AND used_at IS NULL
+                RETURNING tool, customer_id, args, description, observed_state
                 """,
                 [
                     new_expires,
                     self._variant(observed_state) if observed_state is not None else None,
                     token,
                 ],
-            )
+            ).fetchone()
+            if claimed is None:
+                raise ValueError("confirm_token has already been used.")
+            tool, customer_id, args, description, _stored_observed = claimed
             result_observed = observed_state
         return {
             "confirm_token": token,
