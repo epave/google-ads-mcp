@@ -12,6 +12,7 @@ def test_create_server_registers_core_tools(monkeypatch) -> None:
         "list_accessible_customers",
         "search",
         "get_resource_metadata",
+        "get_server_info",
         "get_campaign_dashboard",
         "set_campaign_status",
         "create_search_campaign",
@@ -32,6 +33,16 @@ def test_create_server_registers_core_tools(monkeypatch) -> None:
         "get_search_term_insights",
         "get_search_term_insight_terms",
         "get_impression_share_summary",
+        "list_campaign_assets",
+        "add_campaign_callouts",
+        "add_campaign_structured_snippet",
+        "attach_campaign_assets",
+        "detach_campaign_asset",
+        "get_asset_review_status",
+        "get_campaign_diagnostics",
+        "get_recommendations",
+        "get_campaign_hints",
+        "refresh_preview",
     }
     missing = expected - tools
     assert not missing, f"missing tools: {missing}"
