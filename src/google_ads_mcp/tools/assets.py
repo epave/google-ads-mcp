@@ -240,8 +240,8 @@ def get_asset_review_status(
 
 def _existing_callouts(
     customer_id: str, texts: list[str], login_customer_id: str | None
-) -> dict[str, str]:
-    """Map callout_text -> asset resource_name for matching existing assets."""
+) -> dict[str, list[str]]:
+    """Map callout_text -> candidate asset resource_names (may be multiple)."""
     if not texts:
         return {}
     escaped = ", ".join("'" + t.replace("'", "\\'") + "'" for t in texts)
@@ -252,12 +252,20 @@ def _existing_callouts(
         f"AND asset.callout_asset.callout_text IN ({escaped})",
         login_customer_id=login_customer_id,
     )
-    mapping: dict[str, str] = {}
+    mapping: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
     for row in rows:
         text = row.get("asset.callout_asset.callout_text")
         rn = row.get("asset.resource_name")
-        if text and rn and text not in mapping:
-            mapping[str(text)] = str(rn)
+        if not text or not rn:
+            continue
+        key = str(text)
+        rn_s = str(rn)
+        bucket = seen.setdefault(key, set())
+        if rn_s in bucket:
+            continue
+        bucket.add(rn_s)
+        mapping.setdefault(key, []).append(rn_s)
     return mapping
 
 
@@ -266,7 +274,8 @@ def _existing_snippets(
     header: str,
     values: list[str],
     login_customer_id: str | None,
-) -> str | None:
+) -> list[str]:
+    """Return all structured-snippet assets matching header+values."""
     rows = search(
         customer_id,
         "SELECT asset.resource_name, asset.structured_snippet_asset.header, "
@@ -276,11 +285,43 @@ def _existing_snippets(
         login_customer_id=login_customer_id,
     )
     wanted = tuple(values)
+    matches: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         existing = tuple(row.get("asset.structured_snippet_asset.values") or [])
-        if existing == wanted:
-            return str(row["asset.resource_name"])
-    return None
+        if existing != wanted:
+            continue
+        rn = str(row["asset.resource_name"])
+        if rn in seen:
+            continue
+        seen.add(rn)
+        matches.append(rn)
+    return matches
+
+
+def _prefer_linked_asset(
+    candidates: list[str],
+    camp_ids: list[str],
+    linked: dict[tuple[str, str], dict[str, str]],
+) -> str:
+    """Prefer already-linked ENABLED, then PAUSED, else first candidate."""
+    if not candidates:
+        raise ValueError("candidates must not be empty")
+    paused: list[str] = []
+    for rn in candidates:
+        for camp in camp_ids:
+            meta = linked.get((camp, rn))
+            if meta is None:
+                continue
+            status = meta["status"].upper()
+            if status == "ENABLED":
+                return rn
+            if status == "PAUSED":
+                paused.append(rn)
+                break
+    if paused:
+        return paused[0]
+    return candidates[0]
 
 
 def _campaign_links(
@@ -372,7 +413,7 @@ def _plan_callouts(
     if not camp_ids:
         raise AdsError("campaign_ids must not be empty")
 
-    existing = (
+    candidates_by_text = (
         _existing_callouts(customer_id, texts, login_customer_id) if reuse_existing else {}
     )
     linked = _campaign_links(customer_id, camp_ids, "CALLOUT", login_customer_id)
@@ -381,9 +422,11 @@ def _plan_callouts(
     text_to_asset: dict[str, str] = {}
     to_create: list[str] = []
     for text in texts:
-        if text in existing:
-            text_to_asset[text] = existing[text]
-            diff["reused_assets"].append({"type": "CALLOUT", "text": text, "asset": existing[text]})
+        candidates = candidates_by_text.get(text) or []
+        if candidates:
+            chosen = _prefer_linked_asset(candidates, camp_ids, linked)
+            text_to_asset[text] = chosen
+            diff["reused_assets"].append({"type": "CALLOUT", "text": text, "asset": chosen})
         else:
             to_create.append(text)
 
@@ -403,9 +446,8 @@ def _plan_callouts(
 
     for text in texts:
         asset_rn = text_to_asset[text]
-        lookup_rn = existing.get(text, asset_rn)
         for camp in camp_ids:
-            existing_meta = linked.get((camp, lookup_rn))
+            existing_meta = linked.get((camp, asset_rn))
             if existing_meta is None:
                 operations.append(
                     build_campaign_asset_create(
@@ -428,7 +470,7 @@ def _plan_callouts(
                 diff["re_enabled"].append(
                     {
                         "campaign_id": camp,
-                        "asset": lookup_rn,
+                        "asset": asset_rn,
                         "text": text,
                         "campaign_asset": existing_meta["resource_name"],
                         "from_status": "PAUSED",
@@ -438,7 +480,7 @@ def _plan_callouts(
                 diff["already_attached"].append(
                     {
                         "campaign_id": camp,
-                        "asset": lookup_rn,
+                        "asset": asset_rn,
                         "text": text,
                         "campaign_asset": existing_meta["resource_name"],
                     }
@@ -545,16 +587,16 @@ def add_campaign_structured_snippet(
         },
         login_customer_id,
     )
-    existing_rn = (
-        _existing_snippets(cid, hdr, vals, login_customer_id) if reuse_existing else None
+    snippet_candidates = (
+        _existing_snippets(cid, hdr, vals, login_customer_id) if reuse_existing else []
     )
     linked = _campaign_links(cid, cleaned_campaigns, "STRUCTURED_SNIPPET", login_customer_id)
     diff = empty_asset_diff()
     client = get_client(login_customer_id)
     operations: list[Any] = []
     temps = TempIds()
-    if existing_rn:
-        asset_rn = existing_rn
+    if snippet_candidates:
+        asset_rn = _prefer_linked_asset(snippet_candidates, cleaned_campaigns, linked)
         diff["reused_assets"].append(
             {"type": "STRUCTURED_SNIPPET", "header": hdr, "values": vals, "asset": asset_rn}
         )
@@ -571,12 +613,11 @@ def add_campaign_structured_snippet(
         )
 
     for camp in cleaned_campaigns:
-        attach_rn = existing_rn or asset_rn
         bucket, op, entry = _plan_link_action(
             client=client,
             linked=linked,
             camp=camp,
-            asset_rn=attach_rn,
+            asset_rn=asset_rn,
             field_type="STRUCTURED_SNIPPET",
             customer_id=cid,
             extra={"header": hdr},

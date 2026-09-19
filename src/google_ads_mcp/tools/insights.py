@@ -375,10 +375,20 @@ def get_recommendations(
     }
 
 
+# Types whose detail oneof is campaign_budget_recommendation (proto-plus defaults
+# unset int64 fields to 0, so we must not treat 0 as a real budget on other types).
+_CAMPAIGN_BUDGET_REC_TYPES = frozenset({"CAMPAIGN_BUDGET"})
+_KEYWORD_REC_TYPES = frozenset({"KEYWORD"})
+_CALLOUT_ASSET_REC_TYPES = frozenset({"CALLOUT_ASSET"})
+_SITELINK_ASSET_REC_TYPES = frozenset({"SITELINK_ASSET"})
+
+
 def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
-    rec_type = row.get("recommendation.type")
+    rec_type = str(row.get("recommendation.type") or "").upper()
     details: dict[str, Any] = {}
-    if row.get("recommendation.keyword_recommendation.keyword.text"):
+    if rec_type in _KEYWORD_REC_TYPES and row.get(
+        "recommendation.keyword_recommendation.keyword.text"
+    ):
         details["keyword"] = {
             "text": row.get("recommendation.keyword_recommendation.keyword.text"),
             "match_type": row.get("recommendation.keyword_recommendation.keyword.match_type"),
@@ -386,22 +396,25 @@ def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
                 "recommendation.keyword_recommendation.recommended_cpc_bid_micros"
             ),
         }
-    budget = row.get(
-        "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros"
-    )
-    if budget is not None:
-        details["budget"] = {"recommended_budget_amount_micros": budget}
-    for key, label in (
+    if rec_type in _CAMPAIGN_BUDGET_REC_TYPES:
+        budget = row.get(
+            "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros"
+        )
+        if budget is not None:
+            details["budget"] = {"recommended_budget_amount_micros": budget}
+    for key, label, types in (
         (
             "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets",
             "callout_assets",
+            _CALLOUT_ASSET_REC_TYPES,
         ),
         (
             "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets",
             "sitelink_assets",
+            _SITELINK_ASSET_REC_TYPES,
         ),
     ):
-        if row.get(key) not in (None, [], ""):
+        if rec_type in types and row.get(key) not in (None, [], ""):
             details[label] = row.get(key)
 
     impact = {

@@ -77,6 +77,51 @@ def test_get_recommendations_budget_uses_campaigns(monkeypatch) -> None:
     assert rec["details"]["budget"]["recommended_budget_amount_micros"] == 9_000_000
 
 
+def test_get_recommendations_ignores_unset_budget_on_keyword(monkeypatch) -> None:
+    """Proto-plus defaults unset int64 to 0 — do not invent budget details."""
+
+    def fake_search(cid, query, login_customer_id=None):
+        if "recommendation.campaign =" in query:
+            return [
+                {
+                    "recommendation.resource_name": "customers/1/recommendations/1",
+                    "recommendation.type": "KEYWORD",
+                    "recommendation.campaign": "customers/1/campaigns/111",
+                    "recommendation.campaigns": [],
+                    "recommendation.keyword_recommendation.keyword.text": "shoes",
+                    "recommendation.keyword_recommendation.keyword.match_type": "BROAD",
+                    "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 0,
+                    "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets": [],
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(insights_mod, "search", fake_search)
+    result = insights_mod.get_recommendations("1234567890", campaign_id="111")
+    details = result["recommendations"][0]["details"]
+    assert "budget" not in details
+    assert "callout_assets" not in details
+    assert details["keyword"]["text"] == "shoes"
+
+
+def test_get_recommendations_budget_zero_is_kept_for_budget_type(monkeypatch) -> None:
+    def fake_search(cid, query, login_customer_id=None):
+        return [
+            {
+                "recommendation.resource_name": "customers/1/recommendations/3",
+                "recommendation.type": "CAMPAIGN_BUDGET",
+                "recommendation.campaign": "customers/1/campaigns/111",
+                "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 0,
+            }
+        ]
+
+    monkeypatch.setattr(insights_mod, "search", fake_search)
+    result = insights_mod.get_recommendations("1234567890")
+    assert result["recommendations"][0]["details"]["budget"][
+        "recommended_budget_amount_micros"
+    ] == 0
+
+
 def test_get_recommendations_dedupes_across_queries(monkeypatch) -> None:
     shared = {
         "recommendation.resource_name": "customers/1/recommendations/9",

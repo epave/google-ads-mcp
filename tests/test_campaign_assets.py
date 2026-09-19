@@ -226,6 +226,88 @@ def test_rerun_callouts_no_duplicates(monkeypatch, tmp_path: Path) -> None:
     assert called["n"] == 0
 
 
+def test_reuse_prefers_already_linked_enabled_callout(monkeypatch, tmp_path: Path) -> None:
+    """When multiple assets share callout text, prefer the one already linked ENABLED."""
+    _isolate(monkeypatch, tmp_path)
+    text = "Same text"
+    orphan = "customers/1/assets/10"
+    linked_rn = "customers/1/assets/20"
+
+    def fake_search(customer_id, query, login_customer_id=None):
+        if "FROM asset" in query:
+            # Orphan listed first — naive first-match would pick it.
+            return [
+                {"asset.resource_name": orphan, "asset.callout_asset.callout_text": text},
+                {"asset.resource_name": linked_rn, "asset.callout_asset.callout_text": text},
+            ]
+        return [
+            {
+                "campaign.id": 111,
+                "campaign_asset.asset": linked_rn,
+                "campaign_asset.resource_name": "customers/1/campaignAssets/111~20",
+                "campaign_asset.status": "ENABLED",
+            }
+        ]
+
+    monkeypatch.setattr(assets_mod, "search", fake_search)
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    result = assets_mod.add_campaign_callouts(
+        customer_id="1234567890",
+        campaign_ids=["111"],
+        callouts=[text],
+        reuse_existing=True,
+        dry_run=False,
+    )
+    assert result["diff"]["reused_assets"][0]["asset"] == linked_rn
+    assert result["diff"]["already_attached"][0]["asset"] == linked_rn
+    assert result["diff"]["attached"] == []
+    assert result["diff"]["created_assets"] == []
+
+
+def test_reuse_prefers_linked_structured_snippet(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    header = "Types"
+    values = ["A", "B", "C"]
+    orphan = "customers/1/assets/30"
+    linked_rn = "customers/1/assets/40"
+
+    def fake_search(customer_id, query, login_customer_id=None):
+        if "FROM asset" in query:
+            return [
+                {
+                    "asset.resource_name": orphan,
+                    "asset.structured_snippet_asset.header": header,
+                    "asset.structured_snippet_asset.values": values,
+                },
+                {
+                    "asset.resource_name": linked_rn,
+                    "asset.structured_snippet_asset.header": header,
+                    "asset.structured_snippet_asset.values": values,
+                },
+            ]
+        return [
+            {
+                "campaign.id": 222,
+                "campaign_asset.asset": linked_rn,
+                "campaign_asset.resource_name": "customers/1/campaignAssets/222~40",
+                "campaign_asset.status": "ENABLED",
+            }
+        ]
+
+    monkeypatch.setattr(assets_mod, "search", fake_search)
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    result = assets_mod.add_campaign_structured_snippet(
+        customer_id="1234567890",
+        campaign_ids=["222"],
+        header=header,
+        values=values,
+        reuse_existing=True,
+        dry_run=False,
+    )
+    assert result["diff"]["reused_assets"][0]["asset"] == linked_rn
+    assert result["diff"]["already_attached"][0]["asset"] == linked_rn
+
+
 def test_add_callouts_preview_includes_diff(monkeypatch, tmp_path: Path) -> None:
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "false")
