@@ -52,6 +52,32 @@ def test_pending_scheduled_campaign_is_not_critical() -> None:
     assert primary["severity"] == "informational"
 
 
+def test_pending_uses_customer_time_zone() -> None:
+    """Compare start_date_time as wall clock in the customer account time zone."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    now_pacific = datetime.now(ZoneInfo("America/Los_Angeles")).replace(tzinfo=None)
+    start = (now_pacific + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+    findings = collect_local_findings(
+        campaign={
+            "campaign.status": "ENABLED",
+            "campaign.primary_status": "PENDING",
+            "campaign.primary_status_reasons": [],
+            "campaign.start_date_time": start,
+        },
+        performance={"last_7_days": {"impressions": 0}},
+        impression_share=None,
+        ads=[],
+        keywords=[],
+        assets=[],
+        customer_time_zone="America/Los_Angeles",
+    )
+    primary = next(f for f in findings if f["code"] == "PRIMARY_STATUS")
+    assert primary["severity"] == "informational"
+
+
 def test_pending_unscheduled_campaign_stays_critical() -> None:
     findings = collect_local_findings(
         campaign={
@@ -72,6 +98,8 @@ def test_pending_unscheduled_campaign_stays_critical() -> None:
 
 def test_build_diagnostics_origins(monkeypatch) -> None:
     def fake_search(customer_id, query, login_customer_id=None):
+        if "FROM customer" in query:
+            return [{"customer.time_zone": "America/New_York"}]
         if "FROM campaign WHERE campaign.id" in query and "metrics.cost_micros" not in query:
             if "search_impression_share" in query:
                 return [

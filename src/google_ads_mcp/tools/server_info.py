@@ -25,17 +25,31 @@ def _flags_from_mapping(data: dict[str, Any]) -> tuple[bool, bool, bool, bool, b
     )
 
 
-def _load_yaml_config(path: Any) -> dict[str, Any] | None:
+def _load_yaml_config(path: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (mapping, error). error is set when the file exists but cannot be used."""
     try:
         import yaml
     except ImportError:
-        return None
+        return None, "PyYAML is not installed; cannot read google-ads.yaml"
     try:
         raw = path.read_text(encoding="utf-8")
         data = yaml.safe_load(raw)
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
+    except Exception as exc:
+        return None, f"YAML config is unreadable or malformed ({type(exc).__name__})"
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, "YAML config must be a mapping"
+    return data, None
+
+
+def _empty_flags() -> dict[str, bool]:
+    return {
+        "developer_token_present": False,
+        "oauth_client_present": False,
+        "refresh_token_present": False,
+        "login_customer_id_configured": False,
+    }
 
 
 def _credential_health(settings: Settings) -> dict[str, Any]:
@@ -43,15 +57,9 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
 
     Presence flags mirror client load order (YAML → ADC → env): only the active
     source is inspected, not OR'd across files and environment.
-    Explicit missing paths error only when that source would actually be used
-    (YAML first, then ADC), matching ``_client_from_settings``.
+    Explicit missing paths and unreadable files surface as config_error.
     """
-    empty = {
-        "developer_token_present": False,
-        "oauth_client_present": False,
-        "refresh_token_present": False,
-        "login_customer_id_configured": False,
-    }
+    empty = _empty_flags()
 
     # Explicit YAML path that does not exist: client raises and never falls through.
     if settings.yaml_path is not None and not settings.yaml_path.exists():
@@ -73,22 +81,29 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
 
     # YAML wins — a broken ADC path is irrelevant when YAML is available.
     if yaml_path is not None:
-        source = "yaml"
-        yaml_data = _load_yaml_config(yaml_path) or {}
+        yaml_data, yaml_error = _load_yaml_config(yaml_path)
+        adc_present = False
+        try:
+            adc_present = settings.resolved_adc_path() is not None
+        except FileNotFoundError:
+            adc_present = False
+        if yaml_error is not None:
+            return {
+                "config_source": "yaml",
+                "config_error": yaml_error,
+                "yaml_present": True,
+                "adc_present": adc_present,
+                **empty,
+            }
         (
             has_developer_token,
             has_client_id,
             has_client_secret,
             has_refresh_token,
             has_login_customer_id,
-        ) = _flags_from_mapping(yaml_data)
-        adc_present = False
-        try:
-            adc_present = settings.resolved_adc_path() is not None
-        except FileNotFoundError:
-            adc_present = False
+        ) = _flags_from_mapping(yaml_data or {})
         return {
-            "config_source": source,
+            "config_source": "yaml",
             "config_error": None,
             "yaml_present": True,
             "adc_present": adc_present,
@@ -115,11 +130,24 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
         adc_path = None
 
     if adc_path is not None:
-        source = "adc"
         try:
-            adc = settings.load_adc() or {}
-        except (OSError, ValueError, json.JSONDecodeError):
-            adc = {}
+            adc = settings.load_adc()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {
+                "config_source": "adc",
+                "config_error": f"ADC file is unreadable or malformed ({type(exc).__name__})",
+                "yaml_present": False,
+                "adc_present": True,
+                **empty,
+            }
+        if not isinstance(adc, dict):
+            return {
+                "config_source": "adc",
+                "config_error": "ADC file must contain a JSON object",
+                "yaml_present": False,
+                "adc_present": True,
+                **empty,
+            }
         (
             has_developer_token,
             has_client_id,
@@ -133,30 +161,35 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
         has_client_secret = has_client_secret or bool(settings.client_secret)
         has_refresh_token = has_refresh_token or bool(settings.refresh_token)
         has_login_customer_id = has_login_customer_id or bool(settings.login_customer_id)
-    elif settings.developer_token or settings.client_id or settings.refresh_token:
-        source = "env"
-        has_developer_token = bool(settings.developer_token)
-        has_client_id = bool(settings.client_id)
-        has_client_secret = bool(settings.client_secret)
-        has_refresh_token = bool(settings.refresh_token)
-        has_login_customer_id = bool(settings.login_customer_id)
-    else:
-        source = "none"
-        has_developer_token = False
-        has_client_id = False
-        has_client_secret = False
-        has_refresh_token = False
-        has_login_customer_id = False
+        return {
+            "config_source": "adc",
+            "config_error": None,
+            "yaml_present": False,
+            "adc_present": True,
+            "developer_token_present": has_developer_token,
+            "oauth_client_present": has_client_id and has_client_secret,
+            "refresh_token_present": has_refresh_token,
+            "login_customer_id_configured": has_login_customer_id,
+        }
+
+    if settings.developer_token or settings.client_id or settings.refresh_token:
+        return {
+            "config_source": "env",
+            "config_error": None,
+            "yaml_present": False,
+            "adc_present": False,
+            "developer_token_present": bool(settings.developer_token),
+            "oauth_client_present": bool(settings.client_id) and bool(settings.client_secret),
+            "refresh_token_present": bool(settings.refresh_token),
+            "login_customer_id_configured": bool(settings.login_customer_id),
+        }
 
     return {
-        "config_source": source,
+        "config_source": "none",
         "config_error": None,
         "yaml_present": False,
-        "adc_present": adc_path is not None,
-        "developer_token_present": has_developer_token,
-        "oauth_client_present": has_client_id and has_client_secret,
-        "refresh_token_present": has_refresh_token,
-        "login_customer_id_configured": has_login_customer_id,
+        "adc_present": False,
+        **empty,
     }
 
 

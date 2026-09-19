@@ -58,20 +58,36 @@ def _first(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-def _is_future_start(start_date_time: Any) -> bool:
-    """True when campaign.start_date_time is in the future (scheduled)."""
+def _is_future_start(
+    start_date_time: Any, *, time_zone: str | None = None
+) -> bool:
+    """True when campaign.start_date_time is in the future in the customer TZ."""
     if not start_date_time:
         return False
     from datetime import datetime
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     raw = str(start_date_time).strip()
+    start: datetime | None = None
     for fmt, width in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
         try:
             start = datetime.strptime(raw[:width], fmt)
-            return start > datetime.now()
+            break
         except ValueError:
             continue
-    return False
+    if start is None:
+        return False
+
+    now: datetime
+    if time_zone:
+        try:
+            # start_date_time is wall clock in the account TZ (naive).
+            now = datetime.now(ZoneInfo(time_zone)).replace(tzinfo=None)
+        except (ZoneInfoNotFoundError, ValueError):
+            now = datetime.now()
+    else:
+        now = datetime.now()
+    return start > now
 
 
 def _primary_status_severity(
@@ -79,15 +95,17 @@ def _primary_status_severity(
     *,
     campaign: dict[str, Any],
     reasons: list[Any],
+    customer_time_zone: str | None = None,
 ) -> str:
     """PENDING is expected for scheduled (future start) campaigns — not critical."""
     if primary == "NOT_ELIGIBLE":
         return "critical"
     if primary == "PENDING":
         reason_blob = " ".join(str(r).upper() for r in reasons)
-        scheduled = _is_future_start(campaign.get("campaign.start_date_time")) or any(
-            token in reason_blob for token in ("SCHEDULE", "NOT_STARTED")
-        )
+        scheduled = _is_future_start(
+            campaign.get("campaign.start_date_time"),
+            time_zone=customer_time_zone,
+        ) or any(token in reason_blob for token in ("SCHEDULE", "NOT_STARTED"))
         return "informational" if scheduled else "critical"
     return "warning"
 
@@ -101,6 +119,7 @@ def collect_local_findings(
     keywords: list[dict[str, Any]],
     assets: list[dict[str, Any]],
     conversion_actions: list[dict[str, Any]] | None = None,
+    customer_time_zone: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build LOCAL_DIAGNOSTIC findings from observed campaign state."""
     findings: list[dict[str, Any]] = []
@@ -111,7 +130,12 @@ def collect_local_findings(
     status = str(campaign.get("campaign.status") or "")
 
     if primary and primary not in {"ELIGIBLE", "ELIGIBLE_LIMITED", "UNSPECIFIED", "UNKNOWN", ""}:
-        severity = _primary_status_severity(primary, campaign=campaign, reasons=reasons)
+        severity = _primary_status_severity(
+            primary,
+            campaign=campaign,
+            reasons=reasons,
+            customer_time_zone=customer_time_zone,
+        )
         findings.append(
             finding(
                 severity=severity,
@@ -374,6 +398,17 @@ def build_campaign_diagnostics(
             "findings": [],
         }
 
+    customer_time_zone = None
+    tz_row = _first(
+        search_fn(
+            cid,
+            "SELECT customer.time_zone FROM customer LIMIT 1",
+            login_customer_id=login_customer_id,
+        )
+    )
+    if tz_row:
+        customer_time_zone = tz_row.get("customer.time_zone")
+
     def metrics_query(period: str) -> dict[str, Any] | None:
         return _first(
             search_fn(
@@ -462,6 +497,7 @@ def build_campaign_diagnostics(
         keywords=keywords,
         assets=assets,
         conversion_actions=conversion_actions,
+        customer_time_zone=str(customer_time_zone) if customer_time_zone else None,
     )
 
     google_findings = [

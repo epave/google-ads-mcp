@@ -248,6 +248,35 @@ def test_refresh_preview_audit_redacts_token(tmp_path: Path) -> None:
     assert payload["confirm_token_fingerprint"] != token
 
 
+def test_keyword_removed_when_already_missing_is_noop(monkeypatch, tmp_path: Path) -> None:
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("GOOGLE_ADS_SKIP_CONFIRM", "true")
+    monkeypatch.delenv("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", raising=False)
+
+    monkeypatch.setattr(writes_mod, "search", lambda *a, **k: [])
+    mutate_calls = {"n": 0}
+
+    def boom(*a, **k):
+        mutate_calls["n"] += 1
+        raise AssertionError("mutate must not run when keyword already missing")
+
+    monkeypatch.setattr(writes_mod, "run_ads_call", boom)
+    result = writes_mod.set_keyword_status(
+        customer_id="1234567890",
+        ad_group_id="10",
+        criterion_id="99",
+        status="REMOVED",
+        force=True,
+        dry_run=False,
+    )
+    assert result["noop"] is True
+    assert result["observed_state"] is None
+    assert mutate_calls["n"] == 0
+
+
 def test_keyword_removed_status_is_drift(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))

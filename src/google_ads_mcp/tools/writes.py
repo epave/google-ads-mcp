@@ -210,11 +210,22 @@ def _keyword_disappeared(
     observed: dict[str, Any] | None, *, target_status: str
 ) -> bool:
     """True when the criterion is gone for a non-REMOVED apply (including live REMOVED)."""
-    if observed is None:
-        return True
     if target_status == "REMOVED":
         return False
+    if observed is None:
+        return True
     return str(observed.get("status") or "").upper() == "REMOVED"
+
+
+def _keyword_already_at_target(
+    observed: dict[str, Any] | None, *, target_status: str
+) -> bool:
+    """True when apply would be a no-op (including already-missing for REMOVED)."""
+    if target_status == "REMOVED":
+        return observed is None or str(observed.get("status") or "").upper() == "REMOVED"
+    if observed is None:
+        return False
+    return str(observed.get("status") or "").upper() == target_status
 
 
 def set_keyword_status(
@@ -263,7 +274,7 @@ def set_keyword_status(
             raise AdsError(
                 f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
             )
-        if str(live.get("status") or "").upper() == status:
+        if _keyword_already_at_target(live, target_status=status):
             # Idempotent no-op: consume token when required, skip mutate.
             _gate().authorize_write(
                 tool="set_keyword_status",
@@ -280,7 +291,11 @@ def set_keyword_status(
                 customer_id=cid,
                 payload={
                     "planned": args,
-                    "actual": {"noop": True, "reason": "already_at_status", "live": live},
+                    "actual": {
+                        "noop": True,
+                        "reason": "already_at_status",
+                        "live": live,
+                    },
                 },
             )
             return {

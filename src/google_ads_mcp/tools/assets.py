@@ -674,6 +674,12 @@ def attach_campaign_assets(
     if auth.get("status") == "preview":
         return {**auth, "diff": diff}
     if not operations:
+        get_store().record_audit(
+            tool="attach_campaign_assets",
+            action="apply",
+            customer_id=cid,
+            payload={"diff": diff, "noop": True},
+        )
         return {"status": "applied", "diff": diff, "count": 0, "results": []}
     result = mutate(cid, operations, login_customer_id=login_customer_id)
     get_store().record_audit(

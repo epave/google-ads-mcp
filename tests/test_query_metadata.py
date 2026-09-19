@@ -151,6 +151,31 @@ def test_credential_health_yaml_wins_over_missing_adc(tmp_path, monkeypatch) -> 
     assert info["credentials"]["developer_token_present"] is True
 
 
+def test_credential_health_malformed_yaml(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    yaml_path = tmp_path / "google-ads.yaml"
+    yaml_path.write_text(": not valid yaml [\n", encoding="utf-8")
+    settings = Settings(_env_file=None, yaml_path=yaml_path)
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "yaml"
+    assert info["credentials"]["yaml_present"] is True
+    assert info["credentials"]["config_error"]
+    assert "malformed" in info["credentials"]["config_error"].lower()
+    assert info["credentials"]["developer_token_present"] is False
+
+
+def test_credential_health_malformed_adc(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    adc_path = tmp_path / "adc.json"
+    adc_path.write_text("{not-json", encoding="utf-8")
+    settings = Settings(_env_file=None, adc_path=adc_path)
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "adc"
+    assert info["credentials"]["adc_present"] is True
+    assert info["credentials"]["config_error"]
+    assert "malformed" in info["credentials"]["config_error"].lower()
+
+
 def test_get_resource_metadata_respects_limit(monkeypatch) -> None:
     from types import SimpleNamespace
 

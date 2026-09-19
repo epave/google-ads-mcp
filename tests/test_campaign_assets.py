@@ -280,6 +280,46 @@ def test_paused_campaign_asset_is_re_enabled(monkeypatch, tmp_path: Path) -> Non
     assert captured[0].campaign_asset_operation.update.status.name == "ENABLED"
 
 
+def test_attach_noop_records_audit(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    asset_rn = "customers/1/assets/77"
+    link_rn = "customers/1/campaignAssets/111~77"
+
+    def fake_search(customer_id, query, login_customer_id=None):
+        return [
+            {
+                "campaign.id": 111,
+                "campaign_asset.asset": asset_rn,
+                "campaign_asset.resource_name": link_rn,
+                "campaign_asset.status": "ENABLED",
+            }
+        ]
+
+    monkeypatch.setattr(assets_mod, "search", fake_search)
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    monkeypatch.setattr(
+        assets_mod,
+        "mutate",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no mutate")),
+    )
+    result = assets_mod.attach_campaign_assets(
+        customer_id="1234567890",
+        campaign_ids=["111"],
+        asset_resource_names=[asset_rn],
+        field_type="CALLOUT",
+        dry_run=False,
+    )
+    assert result["status"] == "applied"
+    assert result["count"] == 0
+    assert result["diff"]["already_attached"]
+    from google_ads_mcp.store import get_store
+
+    events = get_store().list_recent_audit(limit=10)
+    applies = [e for e in events if e["tool"] == "attach_campaign_assets" and e["action"] == "apply"]
+    assert applies
+    assert applies[0]["payload"].get("noop") is True
+
+
 def test_detach_requires_force_and_is_idempotent(monkeypatch, tmp_path: Path) -> None:
     _isolate(monkeypatch, tmp_path)
     rn = "customers/1/campaignAssets/111~55"
