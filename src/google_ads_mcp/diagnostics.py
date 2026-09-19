@@ -372,9 +372,10 @@ def build_campaign_diagnostics(
 
     conversion_actions = search_fn(
         cid,
-        "SELECT campaign.id, campaign_conversion_goal.category, "
+        "SELECT campaign_conversion_goal.campaign, campaign_conversion_goal.category, "
         "campaign_conversion_goal.origin, campaign_conversion_goal.biddable "
-        f"FROM campaign_conversion_goal WHERE campaign.id = {camp_id} "
+        "FROM campaign_conversion_goal WHERE "
+        f"campaign_conversion_goal.campaign = 'customers/{cid}/campaigns/{camp_id}' "
         "AND campaign_conversion_goal.biddable = TRUE",
         login_customer_id=login_customer_id,
     )

@@ -428,7 +428,7 @@ def get_campaign_hints(
     )
     google_items = [f for f in diag.get("findings", []) if f.get("origin") == ORIGIN_GOOGLE]
     local_items = [f for f in diag.get("findings", []) if f.get("origin") == ORIGIN_LOCAL]
-    return {
+    payload: dict[str, Any] = {
         "customer_id": diag.get("customer_id"),
         "campaign_id": diag.get("campaign_id"),
         "warning": (
@@ -440,6 +440,9 @@ def get_campaign_hints(
         "findings": diag.get("findings", []),
         "finding_counts": diag.get("finding_counts", {}),
     }
+    if diag.get("error"):
+        payload["error"] = diag["error"]
+    return payload
 
 
 def get_local_audit(limit: int = 20) -> dict[str, Any]:

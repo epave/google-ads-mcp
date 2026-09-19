@@ -356,7 +356,6 @@ def _plan_callouts(
         temp_id = temps.next()
         op = client.get_type("MutateOperation")
         asset = op.asset_operation.create
-        asset.type_ = client.enums.AssetTypeEnum.CALLOUT
         asset.callout_asset.callout_text = text
         rn = set_asset_temp_resource_name(client, op, customer_id, temp_id)
         operations.append(op)
@@ -503,7 +502,6 @@ def add_campaign_structured_snippet(
         temp_id = temps.next()
         op = client.get_type("MutateOperation")
         asset = op.asset_operation.create
-        asset.type_ = client.enums.AssetTypeEnum.STRUCTURED_SNIPPET
         asset.structured_snippet_asset.header = hdr
         asset.structured_snippet_asset.values.extend(vals)
         asset_rn = set_asset_temp_resource_name(client, op, cid, temp_id)

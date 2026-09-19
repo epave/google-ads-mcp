@@ -93,6 +93,8 @@ def test_build_diagnostics_origins(monkeypatch) -> None:
                 }
             ]
         if "FROM campaign_conversion_goal" in query:
+            assert "campaign_conversion_goal.campaign" in query
+            assert "campaign.id" not in query
             return [{"campaign_conversion_goal.biddable": True}]
         return []
 

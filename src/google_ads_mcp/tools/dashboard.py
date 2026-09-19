@@ -124,7 +124,7 @@ def get_campaign_dashboard(
     rec_rows = search(
         cid,
         "SELECT recommendation.campaign, recommendation.type FROM recommendation "
-        "WHERE recommendation.dismissed = FALSE LIMIT 200",
+        "WHERE recommendation.dismissed = FALSE",
         login_customer_id=login_customer_id,
     )
     rec_counts: dict[int, int] = {}
