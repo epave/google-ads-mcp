@@ -34,12 +34,14 @@ def test_validate_callout_limits() -> None:
 
 
 def test_validate_structured_snippet_header() -> None:
-    hdr, vals = validate_structured_snippet("Services", ["a", "b", "c"])
-    assert hdr == "Services"
+    hdr, vals = validate_structured_snippet("Service catalog", ["a", "b", "c"])
+    assert hdr == "Service catalog"
     assert vals == ["a", "b", "c"]
     with pytest.raises(AdsError, match="header"):
         validate_structured_snippet("NotAHeader", ["a", "b", "c"])
-    assert "Services" in STRUCTURED_SNIPPET_HEADERS
+    with pytest.raises(AdsError, match="header"):
+        validate_structured_snippet("Services", ["a", "b", "c"])
+    assert "Service catalog" in STRUCTURED_SNIPPET_HEADERS
 
 
 def test_copy_six_callouts_reuses_existing(monkeypatch, tmp_path: Path) -> None:
@@ -144,7 +146,7 @@ def test_structured_snippet_create_and_attach(monkeypatch, tmp_path: Path) -> No
     result = assets_mod.add_campaign_structured_snippet(
         customer_id="1234567890",
         campaign_ids=["111"],
-        header="Services",
+        header="Service catalog",
         values=["Audit", "Advice", "Support"],
         dry_run=False,
     )
@@ -152,6 +154,28 @@ def test_structured_snippet_create_and_attach(monkeypatch, tmp_path: Path) -> No
     assert len(result["diff"]["created_assets"]) == 1
     assert len(result["diff"]["attached"]) == 1
     assert len(captured) == 2
+
+
+def test_duplicate_callout_inputs_are_deduped(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(assets_mod, "search", lambda *a, **k: [])
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    captured: list[Any] = []
+
+    def fake_mutate(customer_id, operations, **kwargs):
+        captured.extend(operations)
+        return {"results": [], "count": len(list(operations))}
+
+    monkeypatch.setattr(assets_mod, "mutate", fake_mutate)
+    result = assets_mod.add_campaign_callouts(
+        customer_id="1234567890",
+        campaign_ids=["111", "111", "222"],
+        callouts=["Same text", "Same text"],
+        dry_run=False,
+    )
+    assert len(result["diff"]["created_assets"]) == 1
+    assert len(result["diff"]["attached"]) == 2
+    assert len(captured) == 3  # 1 asset + 2 campaign links
 
 
 def test_rerun_callouts_no_duplicates(monkeypatch, tmp_path: Path) -> None:

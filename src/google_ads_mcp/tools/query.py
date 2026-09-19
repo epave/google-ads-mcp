@@ -75,7 +75,10 @@ def get_resource_metadata(
     }
     response = run_ads_call(service.search_google_ads_fields, request=request)
     fields = []
+    cap = int(limit)
     for field in response:
+        if len(fields) >= cap:
+            break
         fields.append(
             {
                 "name": field.name,

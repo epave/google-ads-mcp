@@ -305,6 +305,17 @@ def _campaign_links(
     return linked
 
 
+def _dedupe_preserve(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+
 def _plan_callouts(
     customer_id: str,
     campaign_ids: list[str],
@@ -313,10 +324,12 @@ def _plan_callouts(
     reuse_existing: bool,
     login_customer_id: str | None,
 ) -> tuple[dict[str, Any], list[Any] | None]:
-    texts = [validate_callout_text(t) for t in callouts]
+    texts = _dedupe_preserve([validate_callout_text(t) for t in callouts])
     if not texts:
         raise AdsError("callouts must not be empty")
-    camp_ids = [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    camp_ids = _dedupe_preserve(
+        [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    )
     if not camp_ids:
         raise AdsError("campaign_ids must not be empty")
 
@@ -396,8 +409,10 @@ def add_campaign_callouts(
     are one atomic GoogleAdsService.mutate.
     """
     cid = clean_customer_id(customer_id)
-    cleaned_callouts = [validate_callout_text(t) for t in callouts]
-    cleaned_campaigns = [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    cleaned_callouts = _dedupe_preserve([validate_callout_text(t) for t in callouts])
+    cleaned_campaigns = _dedupe_preserve(
+        [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    )
     args = with_login_arg(
         {
             "campaign_ids": cleaned_campaigns,
@@ -457,7 +472,9 @@ def add_campaign_structured_snippet(
     """Create or reuse a structured snippet and attach it to campaigns atomically."""
     cid = clean_customer_id(customer_id)
     hdr, vals = validate_structured_snippet(header, values)
-    cleaned_campaigns = [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    cleaned_campaigns = _dedupe_preserve(
+        [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    )
     if not cleaned_campaigns:
         raise AdsError("campaign_ids must not be empty")
     args = with_login_arg(
@@ -559,8 +576,10 @@ def attach_campaign_assets(
     ft = field_type.strip().upper()
     if not hasattr(get_client(login_customer_id).enums.AssetFieldTypeEnum, ft):
         raise AdsError(f"Unknown asset field_type {field_type!r}")
-    cleaned_campaigns = [str(int(str(c).replace("-", ""))) for c in campaign_ids]
-    assets = [str(a) for a in asset_resource_names]
+    cleaned_campaigns = _dedupe_preserve(
+        [str(int(str(c).replace("-", ""))) for c in campaign_ids]
+    )
+    assets = _dedupe_preserve([str(a) for a in asset_resource_names])
     if not cleaned_campaigns or not assets:
         raise AdsError("campaign_ids and asset_resource_names must not be empty")
     args = with_login_arg(

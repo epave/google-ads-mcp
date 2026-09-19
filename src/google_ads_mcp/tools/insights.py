@@ -333,9 +333,7 @@ def get_recommendations(
         "recommendation.keyword_recommendation.recommended_cpc_bid_micros, "
         "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros, "
         "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets, "
-        "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets, "
-        "recommendation.structured_snippet_asset_recommendation."
-        "recommended_campaign_structured_snippet_assets "
+        "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets "
         "FROM recommendation WHERE "
         + " AND ".join(conditions)
         + f" LIMIT {int(limit)}",
@@ -377,11 +375,6 @@ def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
         (
             "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets",
             "sitelink_assets",
-        ),
-        (
-            "recommendation.structured_snippet_asset_recommendation."
-            "recommended_campaign_structured_snippet_assets",
-            "structured_snippet_assets",
         ),
     ):
         if row.get(key) not in (None, [], ""):

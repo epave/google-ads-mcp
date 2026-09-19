@@ -12,6 +12,42 @@ from google_ads_mcp.client import ADS_API_VERSION
 from google_ads_mcp.config import Settings, load_settings
 
 
+def _merge_credential_flags(
+    *,
+    has_developer_token: bool,
+    has_client_id: bool,
+    has_client_secret: bool,
+    has_refresh_token: bool,
+    has_login_customer_id: bool,
+    data: dict[str, Any],
+) -> tuple[bool, bool, bool, bool, bool]:
+    nested = data.get("google_ads") if isinstance(data.get("google_ads"), dict) else {}
+    installed = data.get("installed") if isinstance(data.get("installed"), dict) else {}
+    merged = {**installed, **nested, **data}
+    return (
+        has_developer_token
+        or bool(merged.get("developer_token") or merged.get("developerToken")),
+        has_client_id or bool(merged.get("client_id") or merged.get("clientId")),
+        has_client_secret or bool(merged.get("client_secret") or merged.get("clientSecret")),
+        has_refresh_token or bool(merged.get("refresh_token") or merged.get("refreshToken")),
+        has_login_customer_id
+        or bool(merged.get("login_customer_id") or merged.get("loginCustomerId")),
+    )
+
+
+def _load_yaml_config(path: Any) -> dict[str, Any] | None:
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _credential_health(settings: Settings) -> dict[str, Any]:
     """Booleans only — never return token values or file contents."""
     yaml_path = None
@@ -25,32 +61,50 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
     except FileNotFoundError:
         adc_path = None
 
-    adc: dict[str, Any] | None = None
+    has_developer_token = bool(settings.developer_token)
+    has_client_id = bool(settings.client_id)
+    has_client_secret = bool(settings.client_secret)
+    has_refresh_token = bool(settings.refresh_token)
+    has_login_customer_id = bool(settings.login_customer_id)
+
+    if yaml_path is not None:
+        yaml_data = _load_yaml_config(yaml_path)
+        if yaml_data:
+            (
+                has_developer_token,
+                has_client_id,
+                has_client_secret,
+                has_refresh_token,
+                has_login_customer_id,
+            ) = _merge_credential_flags(
+                has_developer_token=has_developer_token,
+                has_client_id=has_client_id,
+                has_client_secret=has_client_secret,
+                has_refresh_token=has_refresh_token,
+                has_login_customer_id=has_login_customer_id,
+                data=yaml_data,
+            )
+
     if adc_path is not None:
         try:
             adc = settings.load_adc()
         except (OSError, ValueError, json.JSONDecodeError):
             adc = None
-
-    has_developer_token = bool(settings.developer_token)
-    has_client_id = bool(settings.client_id)
-    has_client_secret = bool(settings.client_secret)
-    has_refresh_token = bool(settings.refresh_token)
-
-    if adc:
-        nested = adc.get("google_ads") if isinstance(adc.get("google_ads"), dict) else {}
-        installed = adc.get("installed") if isinstance(adc.get("installed"), dict) else {}
-        merged = {**installed, **nested, **adc}
-        has_developer_token = has_developer_token or bool(
-            merged.get("developer_token") or merged.get("developerToken")
-        )
-        has_client_id = has_client_id or bool(merged.get("client_id") or merged.get("clientId"))
-        has_client_secret = has_client_secret or bool(
-            merged.get("client_secret") or merged.get("clientSecret")
-        )
-        has_refresh_token = has_refresh_token or bool(
-            merged.get("refresh_token") or merged.get("refreshToken")
-        )
+        if adc:
+            (
+                has_developer_token,
+                has_client_id,
+                has_client_secret,
+                has_refresh_token,
+                has_login_customer_id,
+            ) = _merge_credential_flags(
+                has_developer_token=has_developer_token,
+                has_client_id=has_client_id,
+                has_client_secret=has_client_secret,
+                has_refresh_token=has_refresh_token,
+                has_login_customer_id=has_login_customer_id,
+                data=adc,
+            )
 
     source = "none"
     if yaml_path is not None:
@@ -67,7 +121,7 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
         "developer_token_present": has_developer_token,
         "oauth_client_present": has_client_id and has_client_secret,
         "refresh_token_present": has_refresh_token,
-        "login_customer_id_configured": bool(settings.login_customer_id),
+        "login_customer_id_configured": has_login_customer_id,
     }
 
 

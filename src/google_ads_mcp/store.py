@@ -220,10 +220,15 @@ class Store:
         ).fetchone()
         if row is None:
             raise ValueError("Unknown confirm_token.")
-        tool, customer_id, args, _expires_at, used_at, description = row
+        tool, customer_id, args, expires_at, used_at, description = row
         if used_at is not None:
             raise ValueError("confirm_token has already been used.")
         now = datetime.now(UTC).replace(tzinfo=None)
+        if expires_at < now:
+            raise ValueError(
+                "confirm_token expired. Preview the mutation again; "
+                "refresh_preview cannot revive an expired token."
+            )
         new_expires = now + timedelta(seconds=ttl_seconds)
         if observed_state is not None:
             self._conn.execute(

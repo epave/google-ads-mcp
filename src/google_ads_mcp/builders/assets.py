@@ -23,7 +23,7 @@ STRUCTURED_SNIPPET_HEADERS = frozenset(
         "Insurance coverage",
         "Models",
         "Neighborhoods",
-        "Services",
+        "Service catalog",
         "Shows",
         "Styles",
         "Types",

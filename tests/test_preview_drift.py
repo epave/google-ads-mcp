@@ -56,6 +56,27 @@ def test_refresh_preview_extends_ttl(tmp_path: Path) -> None:
     assert refreshed["expires_in_seconds"] == 120
 
 
+def test_refresh_preview_rejects_expired(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    store = Store(tmp_path / "db.duckdb")
+    gate = SafetyGate(_settings(preview_ttl_seconds=60), store)
+    preview = gate.authorize_write(
+        tool="set_campaign_status",
+        customer_id="1234567890",
+        args={"status": "PAUSED"},
+        description="pause",
+        dry_run=True,
+    )
+    past = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+    store._conn.execute(
+        "UPDATE preview_tokens SET expires_at = ? WHERE token = ?",
+        [past, preview["confirm_token"]],
+    )
+    with pytest.raises(AdsError, match="expired"):
+        gate.refresh_preview(preview["confirm_token"])
+
+
 def test_keyword_drift_preserves_token(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))

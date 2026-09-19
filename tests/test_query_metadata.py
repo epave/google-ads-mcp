@@ -65,6 +65,64 @@ def test_build_server_info_no_secrets(monkeypatch) -> None:
         "login_customer_id_configured",
     }
 
+def test_build_server_info_reads_yaml_credentials(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.delenv("GOOGLE_ADS_DEVELOPER_TOKEN", raising=False)
+    monkeypatch.delenv("GOOGLE_ADS_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_ADS_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("GOOGLE_ADS_REFRESH_TOKEN", raising=False)
+    yaml_path = tmp_path / "google-ads.yaml"
+    yaml_path.write_text(
+        "developer_token: yaml-dev-token\n"
+        "client_id: yaml-client\n"
+        "client_secret: yaml-secret\n"
+        "refresh_token: yaml-refresh\n"
+        "login_customer_id: '1112223333'\n",
+        encoding="utf-8",
+    )
+    settings = Settings(_env_file=None, yaml_path=yaml_path)
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "yaml"
+    assert info["credentials"]["developer_token_present"] is True
+    assert info["credentials"]["oauth_client_present"] is True
+    assert info["credentials"]["refresh_token_present"] is True
+    assert info["credentials"]["login_customer_id_configured"] is True
+    assert "yaml-dev-token" not in str(info)
+    assert "yaml-secret" not in str(info)
+
+
+def test_get_resource_metadata_respects_limit(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from google_ads_mcp.tools import query as query_mod
+
+    class FakePager:
+        def __iter__(self):
+            for i in range(50):
+                yield SimpleNamespace(
+                    name=f"campaign.field_{i}",
+                    category=SimpleNamespace(name="ATTRIBUTE"),
+                    data_type=SimpleNamespace(name="STRING"),
+                    selectable=True,
+                    filterable=True,
+                    sortable=True,
+                )
+
+    class FakeService:
+        def search_google_ads_fields(self, request=None, **kwargs):
+            return FakePager()
+
+    class FakeClient:
+        def get_service(self, name):
+            return FakeService()
+
+    monkeypatch.setattr(query_mod, "get_client", lambda *_a, **_k: FakeClient())
+    monkeypatch.setattr(query_mod, "run_ads_call", lambda fn, **kw: fn(**kw))
+    result = query_mod.get_resource_metadata("campaign", limit=10)
+    assert result["field_count"] == 10
+    assert len(result["fields"]) == 10
+
+
 def test_get_server_info_registered(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
     monkeypatch.delenv("GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED", raising=False)
