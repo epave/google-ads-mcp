@@ -22,13 +22,17 @@ def test_audit_and_preview_roundtrip(tmp_path: Path) -> None:
     assert events[0]["tool"] == "set_campaign_status"
     assert events[0]["payload"]["hello"] == "world"
 
-    token = store.create_preview(
+    token, expires_at = store.create_preview(
         tool="set_campaign_status",
         customer_id="123",
         args={"campaign_id": "9"},
         description="pause",
         ttl_seconds=60,
+        observed_state={"status": "ENABLED"},
     )
+    assert expires_at is not None
+    peeked = store.peek_preview(token, tool="set_campaign_status", customer_id="123")
+    assert peeked["observed_state"]["status"] == "ENABLED"
     consumed = store.consume_preview(token, tool="set_campaign_status", customer_id="123")
     assert consumed["campaign_id"] == "9"
 

@@ -112,6 +112,7 @@ claude mcp add google-ads -- uv run --directory /ABS/PATH/TO/google-ads-mcp goog
 |---|---|---|
 | Writes | off | `GOOGLE_ADS_WRITE_ENABLED=true` |
 | Confirm token | required | Leave `GOOGLE_ADS_SKIP_CONFIRM` unset. `true` applies writes in one shot — keep it off for Codex/Claude. |
+| Preview TTL | 30 minutes | `GOOGLE_ADS_PREVIEW_TTL_SECONDS`; previews return `expires_at`; use `refresh_preview` to extend |
 | Customer allowlist | none | `GOOGLE_ADS_ALLOWED_CUSTOMER_IDS=123,456` |
 | Budget increase cap | 20% | `GOOGLE_ADS_BUDGET_INCREASE_CAP=0.20` (`force=true` to override) |
 | Remove entity | blocked | `REMOVED` on status tools requires `force=true` |
@@ -127,19 +128,24 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 
 - `list_accessible_customers`
 - `search` — GAQL builder
-- `get_resource_metadata`
+- `get_resource_metadata` — FieldService catalog (API v25 syntax)
+- `get_server_info` — version, API version, write flag, allowlist, tools, credential health (booleans only)
 
 **Read (convenience)**
 
 - `list_campaigns`, `get_campaign`, `list_ad_groups`, `list_ads`, `list_keywords`
-- `get_search_terms`, `get_change_events`, `get_recommendations`
+- `get_search_terms`, `get_change_events`
+- `get_recommendations` — pending Google recommendations (`origin: GOOGLE_API`), optional campaign/type filters and type-specific details
+- `get_campaign_hints` — Google recommendations plus local findings (`origin: LOCAL_DIAGNOSTIC`)
+- `get_campaign_diagnostics` — one-call campaign health with prioritized findings
 - `get_search_term_insights` / `get_search_term_insight_terms` — category-level Search term insights (volume, clicks, conversions, emerging vs prior window; PMax included)
 - `get_impression_share_summary` — search / top / absolute-top share, lost to budget vs rank, period-over-period
-- `get_campaign_dashboard` — running campaigns, spend, CPA, alerts, vs last snapshot
+- `get_campaign_dashboard` — running campaigns, spend, CPA, CTR/CPC, IS losses, asset counts, pending recs, alerts
 - `get_local_audit` — DuckDB write history
 - `list_user_lists` — remarketing lists, Display size, 100-user eligibility
 - `list_audiences` — reusable Audience resources
 - `get_demand_gen_readiness` — pre-enable checks for Demand Gen
+- `list_campaign_assets` / `get_asset_review_status` — campaign callouts, snippets, sitelinks, policy review
 
 **Audience insights** (off until `GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true`; Google allowlist required)
 
@@ -150,6 +156,9 @@ Typical write: call the tool with `dry_run=true` → inspect the preview → cal
 
 - `set_campaign_status` / `set_ad_group_status` / `set_ad_status` / `set_keyword_status` (`REMOVED` needs `force=true`)
 - `update_campaign_budget`, `update_campaign_bidding`
+- `refresh_preview` — extend an unused confirmation token (default TTL 30 minutes)
+- `add_campaign_callouts` / `add_campaign_structured_snippet` — create or reuse text assets and attach to multiple campaigns atomically
+- `attach_campaign_assets` / `detach_campaign_asset` — link or unlink existing assets (detach is reversible; global remove needs `force=true`)
 
 **Create / expand** (campaigns, ad groups, and keywords default PAUSED)
 
@@ -168,20 +177,21 @@ Shopping, Video, and App campaign *creation* are out of scope. Those types can s
 
 ## Practical examples
 
-IDs below are placeholders. Start every session with `list_accessible_customers` and copy a **non-manager** `customer_id`. Manager (MCC) accounts cannot return campaign metrics.
+IDs below are placeholders. Start every session with `get_server_info` then `list_accessible_customers` and copy a **non-manager** `customer_id`. Manager (MCC) accounts cannot return campaign metrics.
 
 ### 1. See the dashboard (no web UI)
 
 Chat:
 
 ```text
-List the Google Ads accounts I can access.
-Then show the campaign dashboard for <customer_id>, including paused campaigns.
+Check the Google Ads MCP server health, list accounts I can access,
+then show the campaign dashboard for <customer_id>, including paused campaigns.
 ```
 
 What the agent should call:
 
 ```text
+get_server_info()
 list_accessible_customers()
 get_campaign_dashboard(customer_id="1234567890", include_paused=true)
 ```
@@ -196,39 +206,50 @@ Example payload (markdown is in `markdown`):
 
 Alerts look like `LIMITED`, `BIDDING_STRATEGY_LEARNING`, or policy limits on asset groups. Call the same tool again later to get spend deltas vs the last local snapshot.
 
-Same thing from a terminal (no chat host):
+Without a chat host, use the packaged smoke CLI (MCP transport, not ad-hoc Python):
 
 ```bash
-uv run python -c "
-import asyncio
-from google_ads_mcp.server import create_server
-from fastmcp import Client
-
-async def main():
-    async with Client(create_server()) as c:
-        r = await c.call_tool('get_campaign_dashboard', {
-            'customer_id': '1234567890',
-            'include_paused': True,
-        })
-        print(r.structured_content['markdown'])
-
-asyncio.run(main())
-"
+uv run google-ads-mcp-smoke
+# optional stdio path (same as Codex/Cursor host launch):
+uv run google-ads-mcp-smoke --stdio
 ```
 
 ### 2. Inspect one campaign
 
 ```text
-List all campaigns on <customer_id>, then get details and last-7-day metrics for campaign <campaign_id>.
+List all campaigns on <customer_id>, then get details, diagnostics, and hints for campaign <campaign_id>.
 ```
 
 ```text
 list_campaigns(customer_id="1234567890", status="ALL", limit=20)
 get_campaign(customer_id="1234567890", campaign_id="111")
+get_campaign_diagnostics(customer_id="1234567890", campaign_id="111")
+get_recommendations(customer_id="1234567890", campaign_id="111")
+get_campaign_hints(customer_id="1234567890", campaign_id="111")
 list_ad_groups(customer_id="1234567890", campaign_id="111")
 get_search_terms(customer_id="1234567890", campaign_id="111", limit=25)
 get_search_term_insights(customer_id="1234567890", campaign_id="111")
-get_recommendations(customer_id="1234567890")
+```
+
+`get_recommendations` items are always `origin: GOOGLE_API`. Local issues (missing callouts, IS lost to budget/rank, policy review, etc.) appear only on `get_campaign_hints` / diagnostics as `origin: LOCAL_DIAGNOSTIC`. UI and API recommendations may differ.
+
+### 2b. Copy callouts to another campaign
+
+```text
+List callouts on campaign A, then preview adding the same callouts to campaigns A and B.
+```
+
+```text
+list_campaign_assets(customer_id="1234567890", campaign_id="24256572700", field_types=["CALLOUT"])
+add_campaign_callouts(
+  customer_id="1234567890",
+  campaign_ids=["24256572700", "24252620847"],
+  callouts=["119 kr per analys"],
+  reuse_existing=true,
+  dry_run=true
+)
+# review confirm_token + diff, then:
+add_campaign_callouts(..., dry_run=false, confirm_token="<token>")
 ```
 
 ### 3. Pause or resume (two-step write)
@@ -447,12 +468,13 @@ CI (`.github/workflows/ci.yml`) installs with uv, runs ruff + pytest, then `goog
 uv sync --extra dev --prerelease=allow
 uv run pytest
 uv run ruff check src tests
-uv run python scripts/smoke_mcp.py --stdio
+uv run google-ads-mcp-smoke
+uv run google-ads-mcp-smoke --stdio
 uv run google-ads-mcp-harness --max-rounds 3 --fix
 uv run google-ads-mcp-harness --all-open
 ```
 
-`scripts/smoke_mcp.py` talks to the server like Claude Code / Codex would: lists tools, previews a paused Search create, confirms writes stay blocked, and reads the DuckDB audit. It does **not** call the live Ads API.
+`google-ads-mcp-smoke` talks to the server like Claude Code / Codex would: lists tools (including `get_server_info`), previews a paused Search create, confirms writes stay blocked, and reads the DuckDB audit. It does **not** call the live Ads API. Optional `--stdio` launches the real `google-ads-mcp` process over MCP stdio.
 
 The harness fingerprints findings. It stops when the set is empty or unchanged. High-severity leftovers fail the build.
 

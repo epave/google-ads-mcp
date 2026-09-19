@@ -292,18 +292,161 @@ def get_change_events(
 
 
 def get_recommendations(
-    customer_id: str, limit: int = 25, login_customer_id: str | None = None
+    customer_id: str,
+    campaign_id: str | None = None,
+    types: list[str] | None = None,
+    limit: int = 25,
+    login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Google Ads optimization recommendations that are still pending."""
+    """Google Ads optimization recommendations that are still pending.
+
+    Optional campaign_id and types filters. Each item is tagged origin=GOOGLE_API
+    with type-specific details when the API returns them. Google Ads UI and API
+    recommendations may differ or update at different times.
+    """
     cid = clean_customer_id(customer_id)
+    conditions = ["recommendation.dismissed = FALSE"]
+    if campaign_id is not None:
+        camp = str(int(str(campaign_id).replace("-", "")))
+        conditions.append(
+            f"recommendation.campaign = 'customers/{cid}/campaigns/{camp}'"
+        )
+    if types:
+        quoted = ", ".join(f"'{t.strip().upper()}'" for t in types)
+        conditions.append(f"recommendation.type IN ({quoted})")
     rows = search(
         cid,
         "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
-        "recommendation.impact FROM recommendation WHERE recommendation.dismissed = FALSE "
-        f"LIMIT {int(limit)}",
+        "recommendation.campaign_budget, recommendation.ad_group, "
+        "recommendation.impact.base_metrics.impressions, "
+        "recommendation.impact.base_metrics.clicks, "
+        "recommendation.impact.base_metrics.cost_micros, "
+        "recommendation.impact.base_metrics.conversions, "
+        "recommendation.impact.base_metrics.conversions_value, "
+        "recommendation.impact.potential_metrics.impressions, "
+        "recommendation.impact.potential_metrics.clicks, "
+        "recommendation.impact.potential_metrics.cost_micros, "
+        "recommendation.impact.potential_metrics.conversions, "
+        "recommendation.impact.potential_metrics.conversions_value, "
+        "recommendation.keyword_recommendation.keyword.text, "
+        "recommendation.keyword_recommendation.keyword.match_type, "
+        "recommendation.keyword_recommendation.recommended_cpc_bid_micros, "
+        "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros, "
+        "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets, "
+        "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets, "
+        "recommendation.structured_snippet_asset_recommendation."
+        "recommended_campaign_structured_snippet_assets "
+        "FROM recommendation WHERE "
+        + " AND ".join(conditions)
+        + f" LIMIT {int(limit)}",
         login_customer_id=login_customer_id,
     )
-    return {"count": len(rows), "recommendations": rows}
+    recommendations = [_normalize_recommendation(row) for row in rows]
+    return {
+        "count": len(recommendations),
+        "origin": "GOOGLE_API",
+        "warning": (
+            "Google Ads UI and API recommendations may differ or update at different times. "
+            "Use get_campaign_hints for local diagnostics tagged LOCAL_DIAGNOSTIC."
+        ),
+        "recommendations": recommendations,
+    }
+
+
+def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
+    rec_type = row.get("recommendation.type")
+    details: dict[str, Any] = {}
+    if row.get("recommendation.keyword_recommendation.keyword.text"):
+        details["keyword"] = {
+            "text": row.get("recommendation.keyword_recommendation.keyword.text"),
+            "match_type": row.get("recommendation.keyword_recommendation.keyword.match_type"),
+            "recommended_cpc_bid_micros": row.get(
+                "recommendation.keyword_recommendation.recommended_cpc_bid_micros"
+            ),
+        }
+    budget = row.get(
+        "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros"
+    )
+    if budget is not None:
+        details["budget"] = {"recommended_budget_amount_micros": budget}
+    for key, label in (
+        (
+            "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets",
+            "callout_assets",
+        ),
+        (
+            "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets",
+            "sitelink_assets",
+        ),
+        (
+            "recommendation.structured_snippet_asset_recommendation."
+            "recommended_campaign_structured_snippet_assets",
+            "structured_snippet_assets",
+        ),
+    ):
+        if row.get(key) not in (None, [], ""):
+            details[label] = row.get(key)
+
+    impact = {
+        "base": {
+            "impressions": row.get("recommendation.impact.base_metrics.impressions"),
+            "clicks": row.get("recommendation.impact.base_metrics.clicks"),
+            "cost_micros": row.get("recommendation.impact.base_metrics.cost_micros"),
+            "conversions": row.get("recommendation.impact.base_metrics.conversions"),
+            "conversions_value": row.get(
+                "recommendation.impact.base_metrics.conversions_value"
+            ),
+        },
+        "potential": {
+            "impressions": row.get("recommendation.impact.potential_metrics.impressions"),
+            "clicks": row.get("recommendation.impact.potential_metrics.clicks"),
+            "cost_micros": row.get("recommendation.impact.potential_metrics.cost_micros"),
+            "conversions": row.get("recommendation.impact.potential_metrics.conversions"),
+            "conversions_value": row.get(
+                "recommendation.impact.potential_metrics.conversions_value"
+            ),
+        },
+    }
+    return {
+        "origin": "GOOGLE_API",
+        "type": rec_type,
+        "campaign": row.get("recommendation.campaign"),
+        "ad_group": row.get("recommendation.ad_group"),
+        "resource_name": row.get("recommendation.resource_name"),
+        "details": details,
+        "impact": impact,
+    }
+
+
+def get_campaign_hints(
+    customer_id: str,
+    campaign_id: str,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
+    """Combine Google API recommendations with local diagnostic findings.
+
+    Google items use origin=GOOGLE_API. Observed problems (IS lost, missing
+    callouts, policy review, learning, no delivery, etc.) use origin=LOCAL_DIAGNOSTIC.
+    """
+    from google_ads_mcp.diagnostics import ORIGIN_GOOGLE, ORIGIN_LOCAL, build_campaign_diagnostics
+
+    diag = build_campaign_diagnostics(
+        customer_id, campaign_id, login_customer_id=login_customer_id
+    )
+    google_items = [f for f in diag.get("findings", []) if f.get("origin") == ORIGIN_GOOGLE]
+    local_items = [f for f in diag.get("findings", []) if f.get("origin") == ORIGIN_LOCAL]
+    return {
+        "customer_id": diag.get("customer_id"),
+        "campaign_id": diag.get("campaign_id"),
+        "warning": (
+            "Google Ads UI and API recommendations may differ or update at different times. "
+            "Local findings are not Google recommendations."
+        ),
+        "google_recommendations": google_items,
+        "local_diagnostics": local_items,
+        "findings": diag.get("findings", []),
+        "finding_counts": diag.get("finding_counts", {}),
+    }
 
 
 def get_local_audit(limit: int = 20) -> dict[str, Any]:
@@ -622,6 +765,7 @@ def register(mcp: FastMCP) -> None:
     mcp.tool(get_impression_share_summary)
     mcp.tool(get_change_events)
     mcp.tool(get_recommendations)
+    mcp.tool(get_campaign_hints)
     mcp.tool(get_local_audit)
     if load_settings().audience_insights_enabled:
         for tool in (

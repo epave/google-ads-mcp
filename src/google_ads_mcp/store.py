@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 def canonical_args(args: dict[str, Any]) -> str:
     return json.dumps(args, sort_keys=True, default=str, separators=(",", ":"))
 
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS audit_events (
     id VARCHAR PRIMARY KEY,
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS preview_tokens (
     customer_id VARCHAR,
     args VARIANT,
     description VARCHAR,
-    used_at TIMESTAMP
+    used_at TIMESTAMP,
+    observed_state VARIANT
 );
 
 CREATE TABLE IF NOT EXISTS dashboard_snapshots (
@@ -67,12 +69,32 @@ class Store:
         version = duckdb.__version__
         logger.info("DuckDB Python %s at %s", version, self.path)
         self._conn.execute(_SCHEMA)
+        self._ensure_observed_state_column()
+
+    def _ensure_observed_state_column(self) -> None:
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info('preview_tokens')").fetchall()
+        }
+        if "observed_state" not in cols:
+            self._conn.execute("ALTER TABLE preview_tokens ADD COLUMN observed_state VARIANT")
 
     def close(self) -> None:
         self._conn.close()
 
     def _variant(self, value: Any) -> str:
         return json.dumps(value, default=str)
+
+    def _decode_variant(self, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return json.loads(value)
+        if hasattr(value, "as_py"):
+            return value.as_py()
+        if isinstance(value, dict):
+            return value
+        return value
 
     def record_audit(
         self,
@@ -109,35 +131,36 @@ class Store:
         args: dict[str, Any],
         description: str,
         ttl_seconds: int,
-    ) -> str:
+        observed_state: dict[str, Any] | None = None,
+    ) -> tuple[str, datetime]:
         token = uuid4().hex
         now = datetime.now(UTC).replace(tzinfo=None)
+        expires_at = now + timedelta(seconds=ttl_seconds)
         self._conn.execute(
             """
             INSERT INTO preview_tokens
-                (token, created_at, expires_at, tool, customer_id, args, description, used_at)
-            VALUES (?, ?, ?, ?, ?, ?::JSON::VARIANT, ?, NULL)
+                (token, created_at, expires_at, tool, customer_id, args, description,
+                 used_at, observed_state)
+            VALUES (?, ?, ?, ?, ?, ?::JSON::VARIANT, ?, NULL, ?::JSON::VARIANT)
             """,
             [
                 token,
                 now,
-                now + timedelta(seconds=ttl_seconds),
+                expires_at,
                 tool,
                 customer_id,
                 self._variant(args),
                 description,
+                self._variant(observed_state) if observed_state is not None else None,
             ],
         )
-        return token
+        return token, expires_at
 
     def _decode_args(self, args: Any) -> dict[str, Any]:
-        if isinstance(args, str):
-            return json.loads(args)
-        if hasattr(args, "as_py"):
-            return args.as_py()
-        return dict(args) if args else {}
+        decoded = self._decode_variant(args)
+        return dict(decoded) if decoded else {}
 
-    def consume_preview(
+    def peek_preview(
         self,
         token: str,
         *,
@@ -145,9 +168,10 @@ class Store:
         customer_id: str | None,
         expected_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """Validate a token without consuming it."""
         row = self._conn.execute(
             """
-            SELECT tool, customer_id, args, expires_at, used_at
+            SELECT tool, customer_id, args, expires_at, used_at, observed_state, description
             FROM preview_tokens
             WHERE token = ?
             """,
@@ -155,7 +179,7 @@ class Store:
         ).fetchone()
         if row is None:
             raise ValueError("Unknown confirm_token. Call the tool with dry_run=true first.")
-        stored_tool, stored_customer, args, expires_at, used_at = row
+        stored_tool, stored_customer, args, expires_at, used_at, observed_state, description = row
         if used_at is not None:
             raise ValueError("confirm_token has already been used.")
         if expires_at < datetime.now(UTC).replace(tzinfo=None):
@@ -170,6 +194,76 @@ class Store:
                 "confirm_token does not match these arguments. Preview the mutation again "
                 "with the exact payload you want to apply."
             )
+        return {
+            "tool": stored_tool,
+            "customer_id": stored_customer,
+            "args": stored_args,
+            "expires_at": expires_at,
+            "observed_state": self._decode_variant(observed_state),
+            "description": description,
+        }
+
+    def refresh_preview(
+        self,
+        token: str,
+        *,
+        ttl_seconds: int,
+        observed_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Extend expiry and optionally refresh observed_state for an unused token."""
+        row = self._conn.execute(
+            """
+            SELECT tool, customer_id, args, expires_at, used_at, description
+            FROM preview_tokens WHERE token = ?
+            """,
+            [token],
+        ).fetchone()
+        if row is None:
+            raise ValueError("Unknown confirm_token.")
+        tool, customer_id, args, _expires_at, used_at, description = row
+        if used_at is not None:
+            raise ValueError("confirm_token has already been used.")
+        now = datetime.now(UTC).replace(tzinfo=None)
+        new_expires = now + timedelta(seconds=ttl_seconds)
+        if observed_state is not None:
+            self._conn.execute(
+                """
+                UPDATE preview_tokens
+                SET expires_at = ?, observed_state = ?::JSON::VARIANT
+                WHERE token = ? AND used_at IS NULL
+                """,
+                [new_expires, self._variant(observed_state), token],
+            )
+        else:
+            self._conn.execute(
+                """
+                UPDATE preview_tokens SET expires_at = ?
+                WHERE token = ? AND used_at IS NULL
+                """,
+                [new_expires, token],
+            )
+        return {
+            "confirm_token": token,
+            "tool": tool,
+            "customer_id": customer_id,
+            "args": self._decode_args(args),
+            "description": description,
+            "expires_at": new_expires,
+            "expires_in_seconds": ttl_seconds,
+            "observed_state": observed_state,
+        }
+
+    def consume_preview(
+        self,
+        token: str,
+        *,
+        tool: str,
+        customer_id: str | None,
+        expected_args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        peeked = self.peek_preview(
+            token, tool=tool, customer_id=customer_id, expected_args=expected_args
+        )
         claimed = self._conn.execute(
             """
             UPDATE preview_tokens
@@ -181,7 +275,7 @@ class Store:
         ).fetchone()
         if claimed is None:
             raise ValueError("confirm_token has already been used.")
-        return stored_args
+        return peeked["args"]
 
     def save_dashboard_snapshot(self, customer_id: str, payload: dict[str, Any]) -> str:
         snapshot_id = str(uuid4())
@@ -212,12 +306,7 @@ class Store:
         ).fetchone()
         if row is None:
             return None
-        payload = row[0]
-        if isinstance(payload, str):
-            return json.loads(payload)
-        if hasattr(payload, "as_py"):
-            return payload.as_py()
-        return dict(payload)
+        return self._decode_variant(row[0])
 
     def list_recent_audit(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = self._conn.execute(
@@ -231,11 +320,7 @@ class Store:
         ).fetchall()
         events = []
         for row in rows:
-            payload = row[5]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            elif hasattr(payload, "as_py"):
-                payload = payload.as_py()
+            payload = self._decode_variant(row[5])
             events.append(
                 {
                     "id": row[0],

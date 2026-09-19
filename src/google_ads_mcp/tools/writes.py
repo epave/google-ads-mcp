@@ -7,6 +7,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from google_ads_mcp.client import get_client, run_ads_call
+from google_ads_mcp.errors import AdsError
 from google_ads_mcp.gaql import search
 from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.money import from_micros, to_micros
@@ -180,6 +181,31 @@ def set_ad_status(
     return {"status": "applied", "resource_name": response.results[0].resource_name}
 
 
+def _observe_keyword(
+    customer_id: str,
+    ad_group_id: str,
+    criterion_id: str,
+    login_customer_id: str | None,
+) -> dict[str, Any] | None:
+    rows = search(
+        customer_id,
+        "SELECT ad_group.id, ad_group_criterion.criterion_id, "
+        "ad_group_criterion.status, ad_group_criterion.keyword.text "
+        "FROM ad_group_criterion WHERE ad_group.id = "
+        f"{int(ad_group_id)} AND ad_group_criterion.criterion_id = {int(criterion_id)} "
+        "AND ad_group_criterion.type = 'KEYWORD' LIMIT 1",
+        login_customer_id=login_customer_id,
+    )
+    if not rows:
+        return None
+    return {
+        "ad_group_id": str(rows[0].get("ad_group.id")),
+        "criterion_id": str(rows[0].get("ad_group_criterion.criterion_id")),
+        "status": rows[0].get("ad_group_criterion.status"),
+        "text": rows[0].get("ad_group_criterion.keyword.text"),
+    }
+
+
 def set_keyword_status(
     customer_id: str,
     ad_group_id: str,
@@ -193,6 +219,9 @@ def set_keyword_status(
     """Set a keyword criterion to ENABLED, PAUSED, or REMOVED.
 
     REMOVED permanently deletes the keyword and requires force=true.
+    Detects state drift between preview and apply: if the keyword was removed
+    in the UI, apply fails without consuming the confirm_token. If the keyword
+    is already at the target status, apply is an idempotent no-op.
     """
     cid = clean_customer_id(customer_id)
     status, args = _status_args(
@@ -201,6 +230,51 @@ def set_keyword_status(
         force,
         login_customer_id,
     )
+    observed = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
+
+    if not dry_run and confirm_token and not _gate().settings.skip_confirm:
+        # Validate token without consuming so drift can reject safely.
+        _gate().peek_write(
+            tool="set_keyword_status",
+            customer_id=cid,
+            args=args,
+            confirm_token=confirm_token,
+        )
+        live = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
+        if live is None:
+            raise AdsError(
+                f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
+                "State drifted since preview; confirm_token was not consumed. "
+                "Preview again if you still need a change."
+            )
+        if str(live.get("status") or "").upper() == status:
+            # Idempotent no-op: consume token, skip mutate.
+            _gate().authorize_write(
+                tool="set_keyword_status",
+                customer_id=cid,
+                args=args,
+                description=f"Set keyword {criterion_id} to {status}",
+                dry_run=False,
+                confirm_token=confirm_token,
+                observed_state=live,
+            )
+            get_store().record_audit(
+                tool="set_keyword_status",
+                action="apply",
+                customer_id=cid,
+                payload={
+                    "planned": args,
+                    "actual": {"noop": True, "reason": "already_at_status", "live": live},
+                },
+            )
+            return {
+                "status": "applied",
+                "noop": True,
+                "reason": "already_at_status",
+                "resource_name": None,
+                "observed_state": live,
+            }
+
     auth = _gate().authorize_write(
         tool="set_keyword_status",
         customer_id=cid,
@@ -208,24 +282,67 @@ def set_keyword_status(
         description=f"Set keyword {criterion_id} to {status}",
         dry_run=dry_run,
         confirm_token=confirm_token,
+        observed_state=observed,
     )
     if preview := _maybe_preview(auth):
         return preview
+    if observed is None and status != "REMOVED":
+        raise AdsError(
+            f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
+        )
     client = get_client(login_customer_id)
     service = client.get_service("AdGroupCriterionService")
     operation = client.get_type("AdGroupCriterionOperation")
-    criterion = operation.update
-    criterion.resource_name = service.ad_group_criterion_path(cid, ad_group_id, criterion_id)
-    criterion.status = status_enum(client, "AdGroupCriterionStatusEnum", status)
-    apply_update_mask(client, operation, criterion)
+    resource_name = service.ad_group_criterion_path(cid, ad_group_id, criterion_id)
+    if status == "REMOVED":
+        operation.remove = resource_name
+    else:
+        criterion = operation.update
+        criterion.resource_name = resource_name
+        criterion.status = status_enum(client, "AdGroupCriterionStatusEnum", status)
+        apply_update_mask(client, operation, criterion)
     response = run_ads_call(service.mutate_ad_group_criteria, customer_id=cid, operations=[operation])
     get_store().record_audit(
         tool="set_keyword_status",
         action="apply",
         customer_id=cid,
-        payload={"criterion_id": criterion_id, "status": status},
+        payload={
+            "planned": args,
+            "actual": {"criterion_id": criterion_id, "status": status},
+            "observed_before": observed,
+        },
     )
     return {"status": "applied", "resource_name": response.results[0].resource_name}
+
+
+def refresh_preview(
+    confirm_token: str,
+    login_customer_id: str | None = None,
+) -> dict[str, Any]:
+    """Extend an unused preview token's expiry and re-snapshot observed state when possible.
+
+    Re-call with the same confirm_token; the token value does not change.
+    """
+    gate = _gate()
+    row = gate.store._conn.execute(
+        "SELECT tool, customer_id, args, used_at FROM preview_tokens WHERE token = ?",
+        [confirm_token],
+    ).fetchone()
+    if row is None:
+        raise AdsError("Unknown confirm_token.")
+    tool, customer_id, args_raw, used_at = row
+    if used_at is not None:
+        raise AdsError("confirm_token has already been used.")
+    args = gate.store._decode_args(args_raw)
+    observed = None
+    if tool == "set_keyword_status" and customer_id and args.get("ad_group_id"):
+        observed = _observe_keyword(
+            customer_id,
+            str(args.get("ad_group_id")),
+            str(args.get("criterion_id")),
+            args.get("login_customer_id") or login_customer_id,
+        )
+    return gate.refresh_preview(confirm_token, observed_state=observed)
 
 
 def update_campaign_budget(
@@ -355,3 +472,4 @@ def register(mcp: FastMCP) -> None:
     mcp.tool(set_keyword_status)
     mcp.tool(update_campaign_budget)
     mcp.tool(update_campaign_bidding)
+    mcp.tool(refresh_preview)

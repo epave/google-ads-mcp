@@ -12,6 +12,23 @@ from google_ads_mcp.gaql import search as run_search
 from google_ads_mcp.ids import clean_customer_id
 
 
+def build_field_metadata_query(resource: str, limit: int = 200) -> str:
+    """Build a GoogleAdsFieldService catalog query (API v25+).
+
+    FieldService queries must not include a FROM clause. Pagination is controlled
+    by the RPC page_size, not a GAQL LIMIT clause.
+    """
+    safe = resource.strip()
+    if not safe or any(ch in safe for ch in ("'", '"', ";", "\\", "\n", "\r")):
+        raise ValueError(f"Invalid resource name: {resource!r}")
+    # limit is applied via page_size on the RPC; keep the signature for callers.
+    _ = int(limit)
+    return (
+        "SELECT name, category, data_type, selectable, filterable, sortable "
+        f"WHERE name LIKE '{safe}.%'"
+    )
+
+
 def search(
     customer_id: str,
     fields: list[str],
@@ -50,12 +67,13 @@ def get_resource_metadata(
     """
     client = get_client(login_customer_id)
     service = client.get_service("GoogleAdsFieldService")
-    query = (
-        "SELECT name, category, data_type, selectable, filterable, sortable "
-        f"FROM google_ads_field WHERE name LIKE '{resource}.%' "
-        f"LIMIT {int(limit)}"
-    )
-    response = run_ads_call(service.search_google_ads_fields, query=query)
+    query = build_field_metadata_query(resource, limit=limit)
+    # page_size caps results; FieldService rejects LIMIT in the query string.
+    request = {
+        "query": query,
+        "page_size": int(limit),
+    }
+    response = run_ads_call(service.search_google_ads_fields, request=request)
     fields = []
     for field in response:
         fields.append(
