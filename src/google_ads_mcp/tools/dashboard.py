@@ -72,11 +72,13 @@ def get_campaign_dashboard(
         f"{status_filter} ORDER BY campaign.name",
         login_customer_id=login_customer_id,
     )
+    # GAQL rejects a WHERE field that is not also selected
+    # (EXPECTED_REFERENCED_FIELD_IN_SELECT_CLAUSE), especially once segments are present.
     today = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, metrics.cost_micros, metrics.clicks, metrics.impressions, "
-            "metrics.conversions, metrics.conversions_value FROM campaign "
+            "SELECT campaign.id, campaign.status, metrics.cost_micros, metrics.clicks, "
+            "metrics.impressions, metrics.conversions, metrics.conversions_value FROM campaign "
             f"WHERE {status_filter} AND segments.date DURING TODAY",
             login_customer_id=login_customer_id,
         )
@@ -84,8 +86,8 @@ def get_campaign_dashboard(
     week = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, metrics.cost_micros, metrics.clicks, metrics.impressions, "
-            "metrics.conversions, metrics.conversions_value FROM campaign "
+            "SELECT campaign.id, campaign.status, metrics.cost_micros, metrics.clicks, "
+            "metrics.impressions, metrics.conversions, metrics.conversions_value FROM campaign "
             f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
             login_customer_id=login_customer_id,
         )
@@ -93,7 +95,7 @@ def get_campaign_dashboard(
     impression_share = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, metrics.search_budget_lost_impression_share, "
+            "SELECT campaign.id, campaign.status, metrics.search_budget_lost_impression_share, "
             "metrics.search_rank_lost_impression_share FROM campaign "
             f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
             login_customer_id=login_customer_id,
@@ -101,8 +103,8 @@ def get_campaign_dashboard(
     )
     asset_rows = search(
         cid,
-        "SELECT campaign.id, campaign_asset.field_type FROM campaign_asset "
-        f"WHERE {status_filter.replace('campaign.status', 'campaign.status')} "
+        "SELECT campaign.id, campaign.status, campaign_asset.field_type FROM campaign_asset "
+        f"WHERE {status_filter} "
         "AND campaign_asset.status != 'REMOVED' "
         "AND campaign_asset.field_type IN ('CALLOUT', 'STRUCTURED_SNIPPET', 'SITELINK')",
         login_customer_id=login_customer_id,
