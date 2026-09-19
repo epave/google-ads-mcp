@@ -34,6 +34,42 @@ def test_local_findings_missing_callouts_not_google() -> None:
     assert all(f["origin"] == ORIGIN_LOCAL for f in findings)
 
 
+def test_pending_scheduled_campaign_is_not_critical() -> None:
+    findings = collect_local_findings(
+        campaign={
+            "campaign.status": "ENABLED",
+            "campaign.primary_status": "PENDING",
+            "campaign.primary_status_reasons": ["CAMPAIGN_SCHEDULED"],
+            "campaign.start_date_time": "2099-01-01 00:00:00",
+        },
+        performance={"last_7_days": {"impressions": 0}},
+        impression_share=None,
+        ads=[],
+        keywords=[],
+        assets=[],
+    )
+    primary = next(f for f in findings if f["code"] == "PRIMARY_STATUS")
+    assert primary["severity"] == "informational"
+
+
+def test_pending_unscheduled_campaign_stays_critical() -> None:
+    findings = collect_local_findings(
+        campaign={
+            "campaign.status": "ENABLED",
+            "campaign.primary_status": "PENDING",
+            "campaign.primary_status_reasons": [],
+            "campaign.start_date_time": "2020-01-01 00:00:00",
+        },
+        performance={"last_7_days": {"impressions": 0}},
+        impression_share=None,
+        ads=[],
+        keywords=[],
+        assets=[],
+    )
+    primary = next(f for f in findings if f["code"] == "PRIMARY_STATUS")
+    assert primary["severity"] == "critical"
+
+
 def test_build_diagnostics_origins(monkeypatch) -> None:
     def fake_search(customer_id, query, login_customer_id=None):
         if "FROM campaign WHERE campaign.id" in query and "metrics.cost_micros" not in query:
@@ -85,11 +121,14 @@ def test_build_diagnostics_origins(monkeypatch) -> None:
         if "FROM campaign_asset" in query:
             return []
         if "FROM recommendation" in query:
+            assert "recommendation.campaigns" in query
+            assert "CONTAINS ANY" in query
             return [
                 {
                     "recommendation.resource_name": "customers/1/recommendations/9",
                     "recommendation.type": "KEYWORD",
                     "recommendation.campaign": "customers/1/campaigns/111",
+                    "recommendation.campaigns": [],
                 }
             ]
         if "FROM campaign_conversion_goal" in query:

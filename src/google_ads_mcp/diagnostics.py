@@ -58,6 +58,40 @@ def _first(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _is_future_start(start_date_time: Any) -> bool:
+    """True when campaign.start_date_time is in the future (scheduled)."""
+    if not start_date_time:
+        return False
+    from datetime import datetime
+
+    raw = str(start_date_time).strip()
+    for fmt, width in (("%Y-%m-%d %H:%M:%S", 19), ("%Y-%m-%d", 10)):
+        try:
+            start = datetime.strptime(raw[:width], fmt)
+            return start > datetime.now()
+        except ValueError:
+            continue
+    return False
+
+
+def _primary_status_severity(
+    primary: str,
+    *,
+    campaign: dict[str, Any],
+    reasons: list[Any],
+) -> str:
+    """PENDING is expected for scheduled (future start) campaigns — not critical."""
+    if primary == "NOT_ELIGIBLE":
+        return "critical"
+    if primary == "PENDING":
+        reason_blob = " ".join(str(r).upper() for r in reasons)
+        scheduled = _is_future_start(campaign.get("campaign.start_date_time")) or any(
+            token in reason_blob for token in ("SCHEDULE", "NOT_STARTED")
+        )
+        return "informational" if scheduled else "critical"
+    return "warning"
+
+
 def collect_local_findings(
     *,
     campaign: dict[str, Any],
@@ -77,7 +111,7 @@ def collect_local_findings(
     status = str(campaign.get("campaign.status") or "")
 
     if primary and primary not in {"ELIGIBLE", "ELIGIBLE_LIMITED", "UNSPECIFIED", "UNKNOWN", ""}:
-        severity = "critical" if primary in {"NOT_ELIGIBLE", "PENDING"} else "warning"
+        severity = _primary_status_severity(primary, campaign=campaign, reasons=reasons)
         findings.append(
             finding(
                 severity=severity,
@@ -363,9 +397,13 @@ def build_campaign_diagnostics(
 
     recommendations = search_fn(
         cid,
-        "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign "
+        "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
+        "recommendation.campaigns "
         "FROM recommendation WHERE recommendation.dismissed = FALSE "
-        f"AND recommendation.campaign = 'customers/{cid}/campaigns/{camp_id}' "
+        "AND ("
+        f"recommendation.campaign = 'customers/{cid}/campaigns/{camp_id}' "
+        f"OR recommendation.campaigns CONTAINS ANY ('customers/{cid}/campaigns/{camp_id}')"
+        ") "
         "LIMIT 50",
         login_customer_id=login_customer_id,
     )

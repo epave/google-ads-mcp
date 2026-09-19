@@ -123,18 +123,32 @@ def get_campaign_dashboard(
 
     rec_rows = search(
         cid,
-        "SELECT recommendation.campaign, recommendation.type FROM recommendation "
-        "WHERE recommendation.dismissed = FALSE",
+        "SELECT recommendation.campaign, recommendation.campaigns, recommendation.type "
+        "FROM recommendation WHERE recommendation.dismissed = FALSE",
         login_customer_id=login_customer_id,
     )
     rec_counts: dict[int, int] = {}
     for row in rec_rows:
-        camp_rn = str(row.get("recommendation.campaign") or "")
-        if "/campaigns/" in camp_rn:
+        camp_rns: list[str] = []
+        singular = row.get("recommendation.campaign")
+        if singular:
+            camp_rns.append(str(singular))
+        repeated = row.get("recommendation.campaigns")
+        if isinstance(repeated, (list, tuple)):
+            camp_rns.extend(str(item) for item in repeated if item)
+        elif repeated:
+            camp_rns.append(str(repeated))
+        seen_ids: set[int] = set()
+        for camp_rn in camp_rns:
+            if "/campaigns/" not in camp_rn:
+                continue
             try:
                 rid = int(camp_rn.rsplit("/", 1)[-1])
             except ValueError:
                 continue
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
             rec_counts[rid] = rec_counts.get(rid, 0) + 1
 
     store = get_store()

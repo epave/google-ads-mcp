@@ -15,6 +15,7 @@ from fastmcp import FastMCP
 from google_ads_mcp.builders.assets import (
     STRUCTURED_SNIPPET_HEADERS,
     build_campaign_asset_create,
+    build_campaign_asset_enable,
     build_campaign_asset_remove,
     empty_asset_diff,
     set_asset_temp_resource_name,
@@ -287,22 +288,60 @@ def _campaign_links(
     campaign_ids: list[str],
     field_type: str,
     login_customer_id: str | None,
-) -> set[tuple[str, str]]:
-    """Set of (campaign_id, asset_resource_name) already linked."""
+) -> dict[tuple[str, str], dict[str, str]]:
+    """Map (campaign_id, asset_resource_name) → {status, resource_name} for non-REMOVED links."""
     if not campaign_ids:
-        return set()
+        return {}
     ids = ", ".join(str(int(str(c).replace("-", ""))) for c in campaign_ids)
     rows = search(
         customer_id,
-        "SELECT campaign.id, campaign_asset.asset FROM campaign_asset "
+        "SELECT campaign.id, campaign_asset.resource_name, campaign_asset.asset, "
+        "campaign_asset.status FROM campaign_asset "
         f"WHERE campaign.id IN ({ids}) AND campaign_asset.field_type = '{field_type}' "
         "AND campaign_asset.status != 'REMOVED'",
         login_customer_id=login_customer_id,
     )
-    linked: set[tuple[str, str]] = set()
+    linked: dict[tuple[str, str], dict[str, str]] = {}
     for row in rows:
-        linked.add((str(row["campaign.id"]), str(row["campaign_asset.asset"])))
+        key = (str(row["campaign.id"]), str(row["campaign_asset.asset"]))
+        linked[key] = {
+            "status": str(row.get("campaign_asset.status") or "ENABLED"),
+            "resource_name": str(row["campaign_asset.resource_name"]),
+        }
     return linked
+
+
+def _plan_link_action(
+    *,
+    client,
+    linked: dict[tuple[str, str], dict[str, str]],
+    camp: str,
+    asset_rn: str,
+    field_type: str,
+    customer_id: str,
+    extra: dict[str, Any] | None = None,
+) -> tuple[str, Any | None, dict[str, Any]]:
+    """Return (bucket, operation_or_none, diff_entry) for one campaign↔asset pair."""
+    meta = extra or {}
+    entry = {"campaign_id": camp, "asset": asset_rn, "field_type": field_type, **meta}
+    existing = linked.get((camp, asset_rn))
+    if existing is None:
+        op = build_campaign_asset_create(
+            client,
+            customer_id=customer_id,
+            campaign_id=camp,
+            asset_resource_name=asset_rn,
+            field_type=field_type,
+        )
+        return "attached", op, entry
+    status = existing["status"].upper()
+    if status == "PAUSED":
+        op = build_campaign_asset_enable(client, resource_name=existing["resource_name"])
+        entry["campaign_asset"] = existing["resource_name"]
+        entry["from_status"] = "PAUSED"
+        return "re_enabled", op, entry
+    entry["campaign_asset"] = existing["resource_name"]
+    return "already_attached", None, entry
 
 
 def _dedupe_preserve(items: list[str]) -> list[str]:
@@ -364,25 +403,46 @@ def _plan_callouts(
 
     for text in texts:
         asset_rn = text_to_asset[text]
+        lookup_rn = existing.get(text, asset_rn)
         for camp in camp_ids:
-            # Newly created temps use temp resource names; existing links use real names.
-            if (camp, asset_rn) in linked or (
-                text in existing and (camp, existing[text]) in linked
-            ):
+            existing_meta = linked.get((camp, lookup_rn))
+            if existing_meta is None:
+                operations.append(
+                    build_campaign_asset_create(
+                        client,
+                        customer_id=customer_id,
+                        campaign_id=camp,
+                        asset_resource_name=asset_rn,
+                        field_type="CALLOUT",
+                    )
+                )
+                diff["attached"].append(
+                    {"campaign_id": camp, "asset": asset_rn, "text": text}
+                )
+            elif existing_meta["status"].upper() == "PAUSED":
+                operations.append(
+                    build_campaign_asset_enable(
+                        client, resource_name=existing_meta["resource_name"]
+                    )
+                )
+                diff["re_enabled"].append(
+                    {
+                        "campaign_id": camp,
+                        "asset": lookup_rn,
+                        "text": text,
+                        "campaign_asset": existing_meta["resource_name"],
+                        "from_status": "PAUSED",
+                    }
+                )
+            else:
                 diff["already_attached"].append(
-                    {"campaign_id": camp, "asset": existing.get(text, asset_rn), "text": text}
+                    {
+                        "campaign_id": camp,
+                        "asset": lookup_rn,
+                        "text": text,
+                        "campaign_asset": existing_meta["resource_name"],
+                    }
                 )
-                continue
-            operations.append(
-                build_campaign_asset_create(
-                    client,
-                    customer_id=customer_id,
-                    campaign_id=camp,
-                    asset_resource_name=asset_rn,
-                    field_type="CALLOUT",
-                )
-            )
-            diff["attached"].append({"campaign_id": camp, "asset": asset_rn, "text": text})
 
     if not operations:
         for text in texts:
@@ -511,21 +571,19 @@ def add_campaign_structured_snippet(
         )
 
     for camp in cleaned_campaigns:
-        if (camp, asset_rn) in linked or (existing_rn and (camp, existing_rn) in linked):
-            diff["already_attached"].append(
-                {"campaign_id": camp, "asset": existing_rn or asset_rn, "header": hdr}
-            )
-            continue
-        operations.append(
-            build_campaign_asset_create(
-                client,
-                customer_id=cid,
-                campaign_id=camp,
-                asset_resource_name=asset_rn,
-                field_type="STRUCTURED_SNIPPET",
-            )
+        attach_rn = existing_rn or asset_rn
+        bucket, op, entry = _plan_link_action(
+            client=client,
+            linked=linked,
+            camp=camp,
+            asset_rn=attach_rn,
+            field_type="STRUCTURED_SNIPPET",
+            customer_id=cid,
+            extra={"header": hdr},
         )
-        diff["attached"].append({"campaign_id": camp, "asset": asset_rn, "header": hdr})
+        diff[bucket].append(entry)
+        if op is not None:
+            operations.append(op)
 
     if not operations:
         for camp in cleaned_campaigns:
@@ -594,23 +652,17 @@ def attach_campaign_assets(
     operations: list[Any] = []
     for camp in cleaned_campaigns:
         for asset_rn in assets:
-            if (camp, asset_rn) in linked:
-                diff["already_attached"].append(
-                    {"campaign_id": camp, "asset": asset_rn, "field_type": ft}
-                )
-                continue
-            operations.append(
-                build_campaign_asset_create(
-                    client,
-                    customer_id=cid,
-                    campaign_id=camp,
-                    asset_resource_name=asset_rn,
-                    field_type=ft,
-                )
+            bucket, op, entry = _plan_link_action(
+                client=client,
+                linked=linked,
+                camp=camp,
+                asset_rn=asset_rn,
+                field_type=ft,
+                customer_id=cid,
             )
-            diff["attached"].append(
-                {"campaign_id": camp, "asset": asset_rn, "field_type": ft}
-            )
+            diff[bucket].append(entry)
+            if op is not None:
+                operations.append(op)
     auth = _gate().authorize_write(
         tool="attach_campaign_assets",
         customer_id=cid,
@@ -638,9 +690,14 @@ def detach_campaign_asset(
     campaign_asset_resource_name: str,
     dry_run: bool = True,
     confirm_token: str | None = None,
+    force: bool = False,
     login_customer_id: str | None = None,
 ) -> dict[str, Any]:
-    """Detach an asset from a campaign (reversible). Does not delete the asset globally."""
+    """Detach an asset from a campaign (reversible). Does not delete the asset globally.
+
+    Uses CampaignAsset remove (status REMOVED), so force=true is required.
+    Idempotent: if the link is already REMOVED or missing, returns a no-op apply.
+    """
     cid = clean_customer_id(customer_id)
     rn = campaign_asset_resource_name.strip()
     if "/campaignAssets/" not in rn:
@@ -648,11 +705,32 @@ def detach_campaign_asset(
             "campaign_asset_resource_name must be a campaign_asset resource "
             "(customers/.../campaignAssets/...)."
         )
-    args = with_login_arg({"campaign_asset_resource_name": rn}, login_customer_id)
+    if not force:
+        raise AdsError(
+            "Detaching sets the campaign asset link to REMOVED. "
+            "Pass force=true if this is intentional."
+        )
+    args = with_login_arg(
+        {"campaign_asset_resource_name": rn, "force": force}, login_customer_id
+    )
+    rows = search(
+        cid,
+        "SELECT campaign_asset.resource_name, campaign_asset.status "
+        f"FROM campaign_asset WHERE campaign_asset.resource_name = '{rn}'",
+        login_customer_id=login_customer_id,
+    )
     diff = empty_asset_diff()
-    diff["detached"].append({"campaign_asset": rn})
+    status = str((rows[0] if rows else {}).get("campaign_asset.status") or "")
+    already_gone = not rows or status.upper() == "REMOVED"
+    if already_gone:
+        diff["unchanged"].append({"campaign_asset": rn, "status": status or "MISSING"})
+    else:
+        diff["detached"].append({"campaign_asset": rn, "from_status": status})
+
     client = get_client(login_customer_id)
-    operations = [build_campaign_asset_remove(client, resource_name=rn)]
+    operations = (
+        [] if already_gone else [build_campaign_asset_remove(client, resource_name=rn)]
+    )
     auth = _gate().authorize_write(
         tool="detach_campaign_asset",
         customer_id=cid,
@@ -663,6 +741,14 @@ def detach_campaign_asset(
     )
     if auth.get("status") == "preview":
         return {**auth, "diff": diff}
+    if not operations:
+        get_store().record_audit(
+            tool="detach_campaign_asset",
+            action="apply",
+            customer_id=cid,
+            payload={"diff": diff, "noop": True},
+        )
+        return {"status": "applied", "diff": diff, "count": 0, "results": []}
     result = mutate(cid, operations, login_customer_id=login_customer_id)
     get_store().record_audit(
         tool="detach_campaign_asset",

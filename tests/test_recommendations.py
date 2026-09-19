@@ -8,13 +8,15 @@ from google_ads_mcp.tools import insights as insights_mod
 def test_get_recommendations_normalized(monkeypatch) -> None:
     def fake_search(cid, query, login_customer_id=None):
         assert "recommendation.keyword_recommendation.keyword.text" in query
-        assert "campaign.id" not in query or "recommendation.campaign" in query
+        assert "recommendation.campaigns" in query
+        assert "CONTAINS ANY" in query
         assert "structured_snippet_asset_recommendation" not in query
         return [
             {
                 "recommendation.resource_name": "customers/1/recommendations/1",
                 "recommendation.type": "KEYWORD",
                 "recommendation.campaign": "customers/1/campaigns/111",
+                "recommendation.campaigns": [],
                 "recommendation.keyword_recommendation.keyword.text": "running shoes",
                 "recommendation.keyword_recommendation.keyword.match_type": "BROAD",
                 "recommendation.impact.base_metrics.clicks": 10,
@@ -30,6 +32,36 @@ def test_get_recommendations_normalized(monkeypatch) -> None:
     assert rec["origin"] == "GOOGLE_API"
     assert rec["details"]["keyword"]["text"] == "running shoes"
     assert rec["impact"]["potential"]["clicks"] == 20
+    assert rec["campaigns"] == ["customers/1/campaigns/111"]
+
+
+def test_get_recommendations_budget_uses_campaigns(monkeypatch) -> None:
+    def fake_search(cid, query, login_customer_id=None):
+        assert "recommendation.campaigns CONTAINS ANY" in query
+        return [
+            {
+                "recommendation.resource_name": "customers/1/recommendations/2",
+                "recommendation.type": "CAMPAIGN_BUDGET",
+                "recommendation.campaign": None,
+                "recommendation.campaigns": [
+                    "customers/1/campaigns/111",
+                    "customers/1/campaigns/222",
+                ],
+                "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 9_000_000,
+            }
+        ]
+
+    monkeypatch.setattr(insights_mod, "search", fake_search)
+    result = insights_mod.get_recommendations(
+        "1234567890", campaign_id="111", types=["CAMPAIGN_BUDGET"]
+    )
+    rec = result["recommendations"][0]
+    assert rec["type"] == "CAMPAIGN_BUDGET"
+    assert rec["campaigns"] == [
+        "customers/1/campaigns/111",
+        "customers/1/campaigns/222",
+    ]
+    assert rec["details"]["budget"]["recommended_budget_amount_micros"] == 9_000_000
 
 
 def test_get_campaign_hints_propagates_error(monkeypatch) -> None:

@@ -96,12 +96,25 @@ def build_campaign_asset_remove(client, *, resource_name: str) -> Any:
     return op
 
 
+def build_campaign_asset_enable(client, *, resource_name: str) -> Any:
+    """Re-enable a paused CampaignAsset link (status → ENABLED)."""
+    from google_ads_mcp.mutate import apply_update_mask
+
+    op = client.get_type("MutateOperation")
+    link = op.campaign_asset_operation.update
+    link.resource_name = resource_name
+    link.status = client.enums.AssetLinkStatusEnum.ENABLED
+    apply_update_mask(client, op.campaign_asset_operation, link)
+    return op
+
+
 def empty_asset_diff() -> dict[str, list[Any]]:
     return {
         "created_assets": [],
         "reused_assets": [],
         "attached": [],
         "already_attached": [],
+        "re_enabled": [],
         "detached": [],
         "unchanged": [],
     }

@@ -308,8 +308,11 @@ def get_recommendations(
     conditions = ["recommendation.dismissed = FALSE"]
     if campaign_id is not None:
         camp = str(int(str(campaign_id).replace("-", "")))
+        camp_rn = f"customers/{cid}/campaigns/{camp}"
+        # Budget-family recs populate repeated recommendation.campaigns, not singular campaign.
         conditions.append(
-            f"recommendation.campaign = 'customers/{cid}/campaigns/{camp}'"
+            f"(recommendation.campaign = '{camp_rn}' "
+            f"OR recommendation.campaigns CONTAINS ANY ('{camp_rn}'))"
         )
     if types:
         quoted = ", ".join(f"'{t.strip().upper()}'" for t in types)
@@ -317,6 +320,7 @@ def get_recommendations(
     rows = search(
         cid,
         "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
+        "recommendation.campaigns, "
         "recommendation.campaign_budget, recommendation.ad_group, "
         "recommendation.impact.base_metrics.impressions, "
         "recommendation.impact.base_metrics.clicks, "
@@ -404,11 +408,24 @@ def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
         "origin": "GOOGLE_API",
         "type": rec_type,
         "campaign": row.get("recommendation.campaign"),
+        "campaigns": _recommendation_campaigns(row),
         "ad_group": row.get("recommendation.ad_group"),
         "resource_name": row.get("recommendation.resource_name"),
         "details": details,
         "impact": impact,
     }
+
+
+def _recommendation_campaigns(row: dict[str, Any]) -> list[str]:
+    raw = row.get("recommendation.campaigns")
+    if isinstance(raw, (list, tuple)):
+        items = [str(item) for item in raw if item]
+        if items:
+            return items
+    elif raw not in (None, ""):
+        return [str(raw)]
+    singular = row.get("recommendation.campaign")
+    return [str(singular)] if singular else []
 
 
 def get_campaign_hints(

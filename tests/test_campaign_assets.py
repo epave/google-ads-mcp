@@ -63,8 +63,13 @@ def test_copy_six_callouts_reuses_existing(monkeypatch, tmp_path: Path) -> None:
         if "FROM campaign_asset" in query:
             # Source campaign already has them; target does not.
             return [
-                {"campaign.id": 111, "campaign_asset.asset": rn}
-                for rn in existing.values()
+                {
+                    "campaign.id": 111,
+                    "campaign_asset.asset": rn,
+                    "campaign_asset.resource_name": f"customers/1/campaignAssets/111~{100 + i}",
+                    "campaign_asset.status": "ENABLED",
+                }
+                for i, rn in enumerate(existing.values(), 1)
             ]
         return []
 
@@ -191,7 +196,14 @@ def test_rerun_callouts_no_duplicates(monkeypatch, tmp_path: Path) -> None:
                     "asset.callout_asset.callout_text": text,
                 }
             ]
-        return [{"campaign.id": 111, "campaign_asset.asset": asset_rn}]
+        return [
+            {
+                "campaign.id": 111,
+                "campaign_asset.asset": asset_rn,
+                "campaign_asset.resource_name": "customers/1/campaignAssets/111~55",
+                "campaign_asset.status": "ENABLED",
+            }
+        ]
 
     monkeypatch.setattr(assets_mod, "search", fake_search)
     monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
@@ -230,3 +242,106 @@ def test_add_callouts_preview_includes_diff(monkeypatch, tmp_path: Path) -> None
     assert "confirm_token" in preview
     assert preview["diff"]["created_assets"]
     assert len(preview["diff"]["attached"]) == 2
+
+
+def test_paused_campaign_asset_is_re_enabled(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    asset_rn = "customers/1/assets/77"
+    link_rn = "customers/1/campaignAssets/111~77"
+
+    def fake_search(customer_id, query, login_customer_id=None):
+        return [
+            {
+                "campaign.id": 111,
+                "campaign_asset.asset": asset_rn,
+                "campaign_asset.resource_name": link_rn,
+                "campaign_asset.status": "PAUSED",
+            }
+        ]
+
+    monkeypatch.setattr(assets_mod, "search", fake_search)
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    captured: list[Any] = []
+
+    def fake_mutate(customer_id, operations, **kwargs):
+        captured.extend(operations)
+        return {"results": [], "count": len(list(operations))}
+
+    monkeypatch.setattr(assets_mod, "mutate", fake_mutate)
+    result = assets_mod.attach_campaign_assets(
+        customer_id="1234567890",
+        campaign_ids=["111"],
+        asset_resource_names=[asset_rn],
+        field_type="CALLOUT",
+        dry_run=False,
+    )
+    assert result["diff"]["already_attached"] == []
+    assert len(result["diff"]["re_enabled"]) == 1
+    assert captured[0].campaign_asset_operation.update.status.name == "ENABLED"
+
+
+def test_detach_requires_force_and_is_idempotent(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    rn = "customers/1/campaignAssets/111~55"
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+
+    with pytest.raises(AdsError, match="force=true"):
+        assets_mod.detach_campaign_asset(
+            customer_id="1234567890",
+            campaign_asset_resource_name=rn,
+            dry_run=False,
+            force=False,
+        )
+
+    monkeypatch.setattr(
+        assets_mod,
+        "search",
+        lambda *a, **k: [
+            {"campaign_asset.resource_name": rn, "campaign_asset.status": "REMOVED"}
+        ],
+    )
+    called = {"n": 0}
+
+    def fake_mutate(*a, **k):
+        called["n"] += 1
+        return {"results": [], "count": 0}
+
+    monkeypatch.setattr(assets_mod, "mutate", fake_mutate)
+    result = assets_mod.detach_campaign_asset(
+        customer_id="1234567890",
+        campaign_asset_resource_name=rn,
+        dry_run=False,
+        force=True,
+    )
+    assert result["status"] == "applied"
+    assert result["diff"]["detached"] == []
+    assert result["diff"]["unchanged"]
+    assert called["n"] == 0
+
+
+def test_detach_with_force_removes_enabled_link(monkeypatch, tmp_path: Path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    rn = "customers/1/campaignAssets/111~55"
+    monkeypatch.setattr(assets_mod, "get_client", lambda *_a, **_k: fake_ads_client())
+    monkeypatch.setattr(
+        assets_mod,
+        "search",
+        lambda *a, **k: [
+            {"campaign_asset.resource_name": rn, "campaign_asset.status": "ENABLED"}
+        ],
+    )
+    captured: list[Any] = []
+
+    def fake_mutate(customer_id, operations, **kwargs):
+        captured.extend(operations)
+        return {"results": [], "count": 1}
+
+    monkeypatch.setattr(assets_mod, "mutate", fake_mutate)
+    result = assets_mod.detach_campaign_asset(
+        customer_id="1234567890",
+        campaign_asset_resource_name=rn,
+        dry_run=False,
+        force=True,
+    )
+    assert result["diff"]["detached"][0]["campaign_asset"] == rn
+    assert captured[0].campaign_asset_operation.remove == rn

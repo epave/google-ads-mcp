@@ -12,26 +12,16 @@ from google_ads_mcp.client import ADS_API_VERSION
 from google_ads_mcp.config import Settings, load_settings
 
 
-def _merge_credential_flags(
-    *,
-    has_developer_token: bool,
-    has_client_id: bool,
-    has_client_secret: bool,
-    has_refresh_token: bool,
-    has_login_customer_id: bool,
-    data: dict[str, Any],
-) -> tuple[bool, bool, bool, bool, bool]:
+def _flags_from_mapping(data: dict[str, Any]) -> tuple[bool, bool, bool, bool, bool]:
     nested = data.get("google_ads") if isinstance(data.get("google_ads"), dict) else {}
     installed = data.get("installed") if isinstance(data.get("installed"), dict) else {}
     merged = {**installed, **nested, **data}
     return (
-        has_developer_token
-        or bool(merged.get("developer_token") or merged.get("developerToken")),
-        has_client_id or bool(merged.get("client_id") or merged.get("clientId")),
-        has_client_secret or bool(merged.get("client_secret") or merged.get("clientSecret")),
-        has_refresh_token or bool(merged.get("refresh_token") or merged.get("refreshToken")),
-        has_login_customer_id
-        or bool(merged.get("login_customer_id") or merged.get("loginCustomerId")),
+        bool(merged.get("developer_token") or merged.get("developerToken")),
+        bool(merged.get("client_id") or merged.get("clientId")),
+        bool(merged.get("client_secret") or merged.get("clientSecret")),
+        bool(merged.get("refresh_token") or merged.get("refreshToken")),
+        bool(merged.get("login_customer_id") or merged.get("loginCustomerId")),
     )
 
 
@@ -49,7 +39,11 @@ def _load_yaml_config(path: Any) -> dict[str, Any] | None:
 
 
 def _credential_health(settings: Settings) -> dict[str, Any]:
-    """Booleans only — never return token values or file contents."""
+    """Booleans only — never return token values or file contents.
+
+    Presence flags mirror client load order (YAML → ADC → env): only the active
+    source is inspected, not OR'd across files and environment.
+    """
     yaml_path = None
     adc_path = None
     try:
@@ -61,58 +55,50 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
     except FileNotFoundError:
         adc_path = None
 
-    has_developer_token = bool(settings.developer_token)
-    has_client_id = bool(settings.client_id)
-    has_client_secret = bool(settings.client_secret)
-    has_refresh_token = bool(settings.refresh_token)
-    has_login_customer_id = bool(settings.login_customer_id)
-
-    if yaml_path is not None:
-        yaml_data = _load_yaml_config(yaml_path)
-        if yaml_data:
-            (
-                has_developer_token,
-                has_client_id,
-                has_client_secret,
-                has_refresh_token,
-                has_login_customer_id,
-            ) = _merge_credential_flags(
-                has_developer_token=has_developer_token,
-                has_client_id=has_client_id,
-                has_client_secret=has_client_secret,
-                has_refresh_token=has_refresh_token,
-                has_login_customer_id=has_login_customer_id,
-                data=yaml_data,
-            )
-
-    if adc_path is not None:
-        try:
-            adc = settings.load_adc()
-        except (OSError, ValueError, json.JSONDecodeError):
-            adc = None
-        if adc:
-            (
-                has_developer_token,
-                has_client_id,
-                has_client_secret,
-                has_refresh_token,
-                has_login_customer_id,
-            ) = _merge_credential_flags(
-                has_developer_token=has_developer_token,
-                has_client_id=has_client_id,
-                has_client_secret=has_client_secret,
-                has_refresh_token=has_refresh_token,
-                has_login_customer_id=has_login_customer_id,
-                data=adc,
-            )
-
-    source = "none"
+    # Match _client_from_settings: YAML wins, then ADC, then env.
     if yaml_path is not None:
         source = "yaml"
+        yaml_data = _load_yaml_config(yaml_path) or {}
+        (
+            has_developer_token,
+            has_client_id,
+            has_client_secret,
+            has_refresh_token,
+            has_login_customer_id,
+        ) = _flags_from_mapping(yaml_data)
     elif adc_path is not None:
         source = "adc"
+        try:
+            adc = settings.load_adc() or {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            adc = {}
+        (
+            has_developer_token,
+            has_client_id,
+            has_client_secret,
+            has_refresh_token,
+            has_login_customer_id,
+        ) = _flags_from_mapping(adc)
+        # client_config_from_adc lets env fill gaps on the ADC path.
+        has_developer_token = has_developer_token or bool(settings.developer_token)
+        has_client_id = has_client_id or bool(settings.client_id)
+        has_client_secret = has_client_secret or bool(settings.client_secret)
+        has_refresh_token = has_refresh_token or bool(settings.refresh_token)
+        has_login_customer_id = has_login_customer_id or bool(settings.login_customer_id)
     elif settings.developer_token or settings.client_id or settings.refresh_token:
         source = "env"
+        has_developer_token = bool(settings.developer_token)
+        has_client_id = bool(settings.client_id)
+        has_client_secret = bool(settings.client_secret)
+        has_refresh_token = bool(settings.refresh_token)
+        has_login_customer_id = bool(settings.login_customer_id)
+    else:
+        source = "none"
+        has_developer_token = False
+        has_client_id = False
+        has_client_secret = False
+        has_refresh_token = False
+        has_login_customer_id = False
 
     return {
         "config_source": source,

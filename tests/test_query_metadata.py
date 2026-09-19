@@ -91,6 +91,28 @@ def test_build_server_info_reads_yaml_credentials(tmp_path, monkeypatch) -> None
     assert "yaml-secret" not in str(info)
 
 
+def test_credential_health_yaml_ignores_env_tokens(tmp_path, monkeypatch) -> None:
+    """Active YAML source must not OR in env credential flags."""
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    yaml_path = tmp_path / "google-ads.yaml"
+    yaml_path.write_text(
+        "developer_token: yaml-only\nclient_id: yaml-client\nclient_secret: yaml-secret\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        _env_file=None,
+        yaml_path=yaml_path,
+        developer_token="env-token",
+        refresh_token="env-refresh",
+    )
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "yaml"
+    assert info["credentials"]["developer_token_present"] is True
+    assert info["credentials"]["oauth_client_present"] is True
+    # refresh_token only in env — must not appear when YAML is the active source
+    assert info["credentials"]["refresh_token_present"] is False
+
+
 def test_get_resource_metadata_respects_limit(monkeypatch) -> None:
     from types import SimpleNamespace
 
