@@ -38,3 +38,41 @@ Insights tools are reads, except `generate_insights_finder_report`, which create
 6. Host docs + unit tests (no live API in CI)
 7. Insights API tools (audience, creator, search-term categories) — issue #9
 8. Demand Gen + Audience resources + campaign conversion goals — issue #17
+
+---
+
+# Epic: Diagnostics, recommendations, and campaign assets
+
+Tracking issue: https://github.com/epave/google-ads-mcp/issues/19
+
+Speckit skills are not available in this environment. This section is the specify → plan → tasks record for the epic.
+
+## Specify
+
+Agents complete campaign ops entirely through MCP tools (no direct Python or Ads API calls):
+
+- Health: `get_server_info` (version, API version, write flag, allowlist, tools, credential booleans)
+- Metadata: `get_resource_metadata` using Google Ads API v25 FieldService syntax (no `FROM`)
+- Campaign assets: list/add callouts and structured snippets, attach/detach, review status — idempotent, multi-campaign, SafetyGate preview
+- Diagnostics: `get_campaign_diagnostics` one-call health; dashboard keeps a compact subset
+- Recommendations: rich `get_recommendations` (filters + type details) with `origin: GOOGLE_API`
+- Hints: `get_campaign_hints` merges Google recs and local findings (`origin: LOCAL_DIAGNOSTIC`)
+- Safer writes: `expires_at`, `refresh_preview`, longer TTL, live-state drift, idempotent no-ops, atomic mutate, detailed audit
+
+## Plan
+
+- FieldService catalog query: `SELECT ... WHERE name LIKE '{resource}.%'` (no `FROM google_ads_field`)
+- Asset create + `CampaignAsset` links in one `GoogleAdsService.mutate`
+- Reuse identical existing assets; never duplicate campaign associations
+- Findings engine shared by diagnostics and hints; severity: critical / warning / opportunity / informational
+- DuckDB preview tokens gain `observed_state` VARIANT; default TTL 30 minutes
+- CI stays fake-client / monkeypatched GAQL; optional local `--live` smoke only
+
+## Tasks
+
+1. PR1 — Fix metadata + `get_server_info` + smoke discovery
+2. PR2 — Campaign asset read/write tools
+3. PR3 — `get_campaign_diagnostics` + dashboard compact fields
+4. PR4 — Rich recommendations + `get_campaign_hints`
+5. PR5 — Preview expiry/refresh, drift detection, idempotent no-ops
+6. PR6 — README chat examples, smoke coverage, harness, close epic

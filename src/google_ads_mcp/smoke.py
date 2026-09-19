@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "list_accessible_customers",
     "search",
     "get_resource_metadata",
+    "get_server_info",
     "list_campaigns",
     "get_campaign",
     "get_campaign_dashboard",
@@ -44,6 +45,16 @@ EXPECTED_TOOLS = {
     "get_local_audit",
     "get_search_term_insights",
     "get_impression_share_summary",
+    "list_campaign_assets",
+    "add_campaign_callouts",
+    "add_campaign_structured_snippet",
+    "attach_campaign_assets",
+    "detach_campaign_asset",
+    "get_asset_review_status",
+    "get_campaign_diagnostics",
+    "get_recommendations",
+    "get_campaign_hints",
+    "refresh_preview",
 }
 
 
@@ -74,6 +85,30 @@ async def run_session(client: Client) -> dict[str, Any]:
     record("list_tools", count=len(tools), missing=missing, sample=sorted(tools)[:8])
     if missing:
         report["ok"] = False
+
+    info = _payload(await client.call_tool("get_server_info", {}))
+    if not isinstance(info, dict):
+        report["ok"] = False
+        record("get_server_info", ok=False)
+    else:
+        info_tools = set(info.get("tools") or [])
+        info_ok = (
+            bool(info.get("server_version"))
+            and bool(info.get("google_ads_api_version"))
+            and "get_server_info" in info_tools
+            and info.get("write_enabled") is False
+            and isinstance(info.get("credentials"), dict)
+            and "secret" not in str(info.get("credentials")).lower()
+        )
+        if not info_ok:
+            report["ok"] = False
+        record(
+            "get_server_info",
+            ok=info_ok,
+            version=info.get("server_version"),
+            api=info.get("google_ads_api_version"),
+            tool_count=len(info_tools),
+        )
 
     preview = _payload(
         await client.call_tool(

@@ -90,6 +90,66 @@ def get_campaign_dashboard(
             login_customer_id=login_customer_id,
         )
     )
+    impression_share = _index_by_campaign(
+        search(
+            cid,
+            "SELECT campaign.id, metrics.search_budget_lost_impression_share, "
+            "metrics.search_rank_lost_impression_share FROM campaign "
+            f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
+            login_customer_id=login_customer_id,
+        )
+    )
+    asset_rows = search(
+        cid,
+        "SELECT campaign.id, campaign_asset.field_type FROM campaign_asset "
+        f"WHERE {status_filter.replace('campaign.status', 'campaign.status')} "
+        "AND campaign_asset.status != 'REMOVED' "
+        "AND campaign_asset.field_type IN ('CALLOUT', 'STRUCTURED_SNIPPET', 'SITELINK')",
+        login_customer_id=login_customer_id,
+    )
+    asset_counts: dict[int, dict[str, int]] = {}
+    for row in asset_rows:
+        cid_key = int(row["campaign.id"])
+        bucket = asset_counts.setdefault(
+            cid_key, {"callouts": 0, "structured_snippets": 0, "sitelinks": 0}
+        )
+        ft = str(row.get("campaign_asset.field_type") or "")
+        if ft == "CALLOUT":
+            bucket["callouts"] += 1
+        elif ft == "STRUCTURED_SNIPPET":
+            bucket["structured_snippets"] += 1
+        elif ft == "SITELINK":
+            bucket["sitelinks"] += 1
+
+    rec_rows = search(
+        cid,
+        "SELECT recommendation.campaign, recommendation.campaigns, recommendation.type "
+        "FROM recommendation WHERE recommendation.dismissed = FALSE",
+        login_customer_id=login_customer_id,
+    )
+    rec_counts: dict[int, int] = {}
+    for row in rec_rows:
+        camp_rns: list[str] = []
+        singular = row.get("recommendation.campaign")
+        if singular:
+            camp_rns.append(str(singular))
+        repeated = row.get("recommendation.campaigns")
+        if isinstance(repeated, (list, tuple)):
+            camp_rns.extend(str(item) for item in repeated if item)
+        elif repeated:
+            camp_rns.append(str(repeated))
+        seen_ids: set[int] = set()
+        for camp_rn in camp_rns:
+            if "/campaigns/" not in camp_rn:
+                continue
+            try:
+                rid = int(camp_rn.rsplit("/", 1)[-1])
+            except ValueError:
+                continue
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            rec_counts[rid] = rec_counts.get(rid, 0) + 1
 
     store = get_store()
     previous = store.previous_dashboard_snapshot(cid)
@@ -116,9 +176,12 @@ def get_campaign_dashboard(
         spend_7d = from_micros(spend_7d_micros)
         clicks_7d = float(week_m.get("metrics.clicks") or 0)
         conv_7d = float(week_m.get("metrics.conversions") or 0)
+        impressions_7d = float(week_m.get("metrics.impressions") or 0)
         value_7d = float(week_m.get("metrics.conversions_value") or 0)
         cpa = (spend_7d / conv_7d) if conv_7d else None
         roas = (value_7d / spend_7d) if spend_7d else None
+        ctr_7d = (clicks_7d / impressions_7d) if impressions_7d else None
+        cpc_7d = (spend_7d / clicks_7d) if clicks_7d else None
         budget = from_micros(budget_micros)
         reasons = row.get("campaign.primary_status_reasons") or []
         if isinstance(reasons, str):
@@ -132,6 +195,12 @@ def get_campaign_dashboard(
         if budget and spend_today >= budget:
             alerts.append(f"{row['campaign.name']}: spent full daily budget today")
 
+        is_row = impression_share.get(campaign_id, {})
+        assets = asset_counts.get(
+            campaign_id, {"callouts": 0, "structured_snippets": 0, "sitelinks": 0}
+        )
+        pending_recs = rec_counts.get(campaign_id, 0)
+
         prev = prev_by_id.get(campaign_id)
         item = {
             "campaign_id": campaign_id,
@@ -143,11 +212,17 @@ def get_campaign_dashboard(
             "spend_today": spend_today,
             "spend_7d": spend_7d,
             "clicks_7d": clicks_7d,
-            "impressions_7d": float(week_m.get("metrics.impressions") or 0),
+            "impressions_7d": impressions_7d,
             "conversions_7d": conv_7d,
+            "ctr_7d": round(ctr_7d, 4) if ctr_7d is not None else None,
+            "cpc_7d": round(cpc_7d, 2) if cpc_7d is not None else None,
             "cpa_7d": round(cpa, 2) if cpa is not None else None,
             "roas_7d": round(roas, 2) if roas is not None else None,
             "spend_7d_delta": _delta(spend_7d, prev.get("spend_7d") if prev else None),
+            "lost_to_budget": is_row.get("metrics.search_budget_lost_impression_share"),
+            "lost_to_rank": is_row.get("metrics.search_rank_lost_impression_share"),
+            "asset_counts": assets,
+            "pending_recommendations": pending_recs,
         }
         campaigns.append(item)
         markdown_lines.append(

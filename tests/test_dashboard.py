@@ -18,6 +18,20 @@ def test_dashboard_markdown_formats_source_micros(monkeypatch, tmp_path: Path) -
                     "customer.manager": False,
                 }
             ]
+        if "FROM recommendation" in query:
+            return []
+        if "FROM campaign_asset" in query:
+            return [
+                {"campaign.id": 9, "campaign_asset.field_type": "CALLOUT"},
+            ]
+        if "search_budget_lost_impression_share" in query:
+            return [
+                {
+                    "campaign.id": 9,
+                    "metrics.search_budget_lost_impression_share": 0.1,
+                    "metrics.search_rank_lost_impression_share": 0.2,
+                }
+            ]
         if "metrics.cost_micros" not in query:
             return [
                 {

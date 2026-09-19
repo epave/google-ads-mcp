@@ -15,23 +15,27 @@ INSTRUCTIONS = """
 Google Ads MCP for managing campaigns from Claude Code, Codex, and other agents.
 
 Read tools match the official Google Ads MCP: list_accessible_customers, search,
-get_resource_metadata. Additional tools list campaigns/ads/keywords, return a
-compact dashboard (get_campaign_dashboard), search-term insight categories
-(get_search_term_insights), and impression share (get_impression_share_summary).
+get_resource_metadata, get_server_info. Additional tools list campaigns/ads/keywords,
+return a compact dashboard (get_campaign_dashboard), one-call diagnostics
+(get_campaign_diagnostics), Google recommendations (get_recommendations) and local
+hints (get_campaign_hints), search-term insight categories (get_search_term_insights),
+and impression share (get_impression_share_summary). Campaign callouts and structured
+snippets use add_campaign_callouts / add_campaign_structured_snippet.
 Audience and YouTube creator tools stay hidden until
 GOOGLE_ADS_AUDIENCE_INSIGHTS_ENABLED=true (Google allowlist required).
 
 Writes are off until GOOGLE_ADS_WRITE_ENABLED=true. New campaigns are created
-PAUSED. Mutates default to dry_run and return a confirm_token; call again with
-that token to apply. Demand Gen uses create_demand_gen_campaign (not the
-Display builder) plus list_user_lists / create_audience. Start with a test
-account.
+PAUSED. Mutates default to dry_run and return a confirm_token with expires_at;
+call again with that token to apply, or refresh_preview to extend TTL. Demand Gen
+uses create_demand_gen_campaign (not the Display builder) plus list_user_lists /
+create_audience. Start with a test account.
 
 Typical flow:
-1. list_accessible_customers
-2. get_campaign_dashboard
-3. preview a write (dry_run=true)
-4. apply with confirm_token
+1. get_server_info
+2. list_accessible_customers
+3. get_campaign_dashboard / get_campaign_diagnostics
+4. preview a write (dry_run=true)
+5. apply with confirm_token
 """.strip()
 
 

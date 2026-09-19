@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     )
     budget_increase_cap: float = Field(default=0.20, validation_alias="GOOGLE_ADS_BUDGET_INCREASE_CAP")
     db_path: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_MCP_DB")
-    preview_ttl_seconds: int = Field(default=15 * 60, validation_alias="GOOGLE_ADS_PREVIEW_TTL_SECONDS")
+    preview_ttl_seconds: int = Field(default=30 * 60, validation_alias="GOOGLE_ADS_PREVIEW_TTL_SECONDS")
     asset_root: Path | None = Field(default=None, validation_alias="GOOGLE_ADS_ASSET_ROOT")
 
     def allowlist(self) -> set[str] | None:
