@@ -299,6 +299,51 @@ def asset_type_counts(assets: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _dedupe_recommendation_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rn = str(row.get("recommendation.resource_name") or "")
+        if rn and rn in seen:
+            continue
+        if rn:
+            seen.add(rn)
+        out.append(row)
+    return out
+
+
+def _campaign_recommendation_rows(
+    customer_id: str,
+    campaign_id: str,
+    *,
+    search_fn=search,
+    login_customer_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Fetch campaign-scoped recommendations without GAQL OR (unsupported).
+
+    Budget-family types use repeated ``recommendation.campaigns``; others use
+    singular ``recommendation.campaign``. Two queries + dedupe.
+    """
+    camp_rn = f"customers/{customer_id}/campaigns/{campaign_id}"
+    select = (
+        "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
+        "recommendation.campaigns FROM recommendation WHERE recommendation.dismissed = FALSE "
+    )
+    by_campaign = search_fn(
+        customer_id,
+        select + f"AND recommendation.campaign = '{camp_rn}' LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
+    )
+    by_campaigns = search_fn(
+        customer_id,
+        select
+        + f"AND recommendation.campaigns CONTAINS ANY ('{camp_rn}') LIMIT {int(limit)}",
+        login_customer_id=login_customer_id,
+    )
+    return _dedupe_recommendation_rows(list(by_campaign) + list(by_campaigns))[: int(limit)]
+
+
 def build_campaign_diagnostics(
     customer_id: str,
     campaign_id: str,
@@ -395,17 +440,8 @@ def build_campaign_diagnostics(
         login_customer_id=login_customer_id,
     )
 
-    recommendations = search_fn(
-        cid,
-        "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
-        "recommendation.campaigns "
-        "FROM recommendation WHERE recommendation.dismissed = FALSE "
-        "AND ("
-        f"recommendation.campaign = 'customers/{cid}/campaigns/{camp_id}' "
-        f"OR recommendation.campaigns CONTAINS ANY ('customers/{cid}/campaigns/{camp_id}')"
-        ") "
-        "LIMIT 50",
-        login_customer_id=login_customer_id,
+    recommendations = _campaign_recommendation_rows(
+        cid, camp_id, search_fn=search_fn, login_customer_id=login_customer_id
     )
 
     conversion_actions = search_fn(

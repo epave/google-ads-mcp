@@ -121,8 +121,10 @@ def test_build_diagnostics_origins(monkeypatch) -> None:
         if "FROM campaign_asset" in query:
             return []
         if "FROM recommendation" in query:
-            assert "recommendation.campaigns" in query
-            assert "CONTAINS ANY" in query
+            assert " OR " not in query
+            assert "recommendation.campaigns" in query or "recommendation.campaign =" in query
+            if "CONTAINS ANY" in query:
+                return []
             return [
                 {
                     "recommendation.resource_name": "customers/1/recommendations/9",

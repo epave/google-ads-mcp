@@ -43,7 +43,40 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
 
     Presence flags mirror client load order (YAML → ADC → env): only the active
     source is inspected, not OR'd across files and environment.
+    Explicit missing YAML/ADC paths are reported as config errors (no fallback),
+    matching ``_client_from_settings``.
     """
+    empty = {
+        "developer_token_present": False,
+        "oauth_client_present": False,
+        "refresh_token_present": False,
+        "login_customer_id_configured": False,
+    }
+
+    # Explicit paths that do not exist: client raises and never falls through.
+    if settings.yaml_path is not None and not settings.yaml_path.exists():
+        return {
+            "config_source": "yaml",
+            "config_error": (
+                f"GOOGLE_ADS_CONFIGURATION_FILE_PATH={settings.yaml_path} does not exist"
+            ),
+            "yaml_present": False,
+            "adc_present": False,
+            **empty,
+        }
+    if (
+        settings.yaml_path is None
+        and settings.adc_path is not None
+        and not settings.adc_path.exists()
+    ):
+        return {
+            "config_source": "adc",
+            "config_error": f"GOOGLE_ADS_ADC_PATH={settings.adc_path} does not exist",
+            "yaml_present": False,
+            "adc_present": False,
+            **empty,
+        }
+
     yaml_path = None
     adc_path = None
     try:
@@ -102,6 +135,7 @@ def _credential_health(settings: Settings) -> dict[str, Any]:
 
     return {
         "config_source": source,
+        "config_error": None,
         "yaml_present": yaml_path is not None,
         "adc_present": adc_path is not None,
         "developer_token_present": has_developer_token,

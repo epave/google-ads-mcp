@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 
 from google_ads_mcp import insights as ads_insights
 from google_ads_mcp.config import load_settings
+from google_ads_mcp.diagnostics import _dedupe_recommendation_rows
 from google_ads_mcp.errors import AdsError
 from google_ads_mcp.gaql import search
 from google_ads_mcp.ids import clean_customer_id
@@ -305,20 +306,7 @@ def get_recommendations(
     recommendations may differ or update at different times.
     """
     cid = clean_customer_id(customer_id)
-    conditions = ["recommendation.dismissed = FALSE"]
-    if campaign_id is not None:
-        camp = str(int(str(campaign_id).replace("-", "")))
-        camp_rn = f"customers/{cid}/campaigns/{camp}"
-        # Budget-family recs populate repeated recommendation.campaigns, not singular campaign.
-        conditions.append(
-            f"(recommendation.campaign = '{camp_rn}' "
-            f"OR recommendation.campaigns CONTAINS ANY ('{camp_rn}'))"
-        )
-    if types:
-        quoted = ", ".join(f"'{t.strip().upper()}'" for t in types)
-        conditions.append(f"recommendation.type IN ({quoted})")
-    rows = search(
-        cid,
+    select = (
         "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
         "recommendation.campaigns, "
         "recommendation.campaign_budget, recommendation.ad_group, "
@@ -339,10 +327,42 @@ def get_recommendations(
         "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets, "
         "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets "
         "FROM recommendation WHERE "
-        + " AND ".join(conditions)
-        + f" LIMIT {int(limit)}",
-        login_customer_id=login_customer_id,
     )
+    base_conditions = ["recommendation.dismissed = FALSE"]
+    if types:
+        quoted = ", ".join(f"'{t.strip().upper()}'" for t in types)
+        base_conditions.append(f"recommendation.type IN ({quoted})")
+
+    if campaign_id is None:
+        rows = search(
+            cid,
+            select + " AND ".join(base_conditions) + f" LIMIT {int(limit)}",
+            login_customer_id=login_customer_id,
+        )
+    else:
+        # GAQL WHERE has no OR / parentheses — query singular and repeated fields apart.
+        camp = str(int(str(campaign_id).replace("-", "")))
+        camp_rn = f"customers/{cid}/campaigns/{camp}"
+        where_base = " AND ".join(base_conditions)
+        by_campaign = search(
+            cid,
+            select
+            + where_base
+            + f" AND recommendation.campaign = '{camp_rn}' LIMIT {int(limit)}",
+            login_customer_id=login_customer_id,
+        )
+        by_campaigns = search(
+            cid,
+            select
+            + where_base
+            + f" AND recommendation.campaigns CONTAINS ANY ('{camp_rn}') "
+            + f"LIMIT {int(limit)}",
+            login_customer_id=login_customer_id,
+        )
+        rows = _dedupe_recommendation_rows(list(by_campaign) + list(by_campaigns))[
+            : int(limit)
+        ]
+
     recommendations = [_normalize_recommendation(row) for row in rows]
     return {
         "count": len(recommendations),

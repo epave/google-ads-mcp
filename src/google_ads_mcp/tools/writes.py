@@ -206,6 +206,17 @@ def _observe_keyword(
     }
 
 
+def _keyword_disappeared(
+    observed: dict[str, Any] | None, *, target_status: str
+) -> bool:
+    """True when the criterion is gone for a non-REMOVED apply (including live REMOVED)."""
+    if observed is None:
+        return True
+    if target_status == "REMOVED":
+        return False
+    return str(observed.get("status") or "").upper() == "REMOVED"
+
+
 def set_keyword_status(
     customer_id: str,
     ad_group_id: str,
@@ -241,7 +252,7 @@ def set_keyword_status(
             confirm_token=confirm_token,
         )
         live = _observe_keyword(cid, ad_group_id, criterion_id, login_customer_id)
-        if live is None:
+        if _keyword_disappeared(live, target_status=status):
             raise AdsError(
                 f"Keyword {criterion_id} in ad group {ad_group_id} no longer exists. "
                 "State drifted since preview; confirm_token was not consumed. "
@@ -286,7 +297,7 @@ def set_keyword_status(
     )
     if preview := _maybe_preview(auth):
         return preview
-    if observed is None and status != "REMOVED":
+    if _keyword_disappeared(observed, target_status=status):
         raise AdsError(
             f"Keyword {criterion_id} in ad group {ad_group_id} was not found."
         )

@@ -57,6 +57,7 @@ def test_build_server_info_no_secrets(monkeypatch) -> None:
     assert "refresh_token" not in info["credentials"]
     assert set(info["credentials"].keys()) == {
         "config_source",
+        "config_error",
         "yaml_present",
         "adc_present",
         "developer_token_present",
@@ -64,6 +65,7 @@ def test_build_server_info_no_secrets(monkeypatch) -> None:
         "refresh_token_present",
         "login_customer_id_configured",
     }
+    assert info["credentials"]["config_error"] is None
 
 def test_build_server_info_reads_yaml_credentials(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
@@ -110,6 +112,27 @@ def test_credential_health_yaml_ignores_env_tokens(tmp_path, monkeypatch) -> Non
     assert info["credentials"]["developer_token_present"] is True
     assert info["credentials"]["oauth_client_present"] is True
     # refresh_token only in env — must not appear when YAML is the active source
+    assert info["credentials"]["refresh_token_present"] is False
+    assert info["credentials"]["config_error"] is None
+
+
+def test_credential_health_reports_missing_explicit_yaml(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    missing = tmp_path / "missing-google-ads.yaml"
+    settings = Settings(
+        _env_file=None,
+        yaml_path=missing,
+        developer_token="env-token",
+        client_id="env-client",
+        client_secret="env-secret",
+        refresh_token="env-refresh",
+    )
+    info = build_server_info(tool_names=["get_server_info"], settings=settings)
+    assert info["credentials"]["config_source"] == "yaml"
+    assert info["credentials"]["config_error"]
+    assert "does not exist" in info["credentials"]["config_error"]
+    assert info["credentials"]["developer_token_present"] is False
+    assert info["credentials"]["oauth_client_present"] is False
     assert info["credentials"]["refresh_token_present"] is False
 
 

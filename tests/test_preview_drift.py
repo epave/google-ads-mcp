@@ -189,6 +189,69 @@ def test_keyword_already_at_status_is_noop(monkeypatch, tmp_path: Path) -> None:
     assert mutate_calls["n"] == 0
 
 
+def test_keyword_removed_status_is_drift(monkeypatch, tmp_path: Path) -> None:
+    reset_store_for_tests()
+    monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_ENABLED", "true")
+    monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    monkeypatch.setenv("GOOGLE_ADS_SKIP_CONFIRM", "false")
+    monkeypatch.delenv("GOOGLE_ADS_ALLOWED_CUSTOMER_IDS", raising=False)
+
+    enabled = {
+        "ad_group.id": 10,
+        "ad_group_criterion.criterion_id": 99,
+        "ad_group_criterion.status": "ENABLED",
+        "ad_group_criterion.keyword.text": "shoes",
+    }
+    removed = {**enabled, "ad_group_criterion.status": "REMOVED"}
+    calls = {"n": 0}
+
+    def fake_search(cid, query, login_customer_id=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [enabled]
+        return [removed]
+
+    monkeypatch.setattr(writes_mod, "search", fake_search)
+    mutate_calls = {"n": 0}
+
+    def boom(*a, **k):
+        mutate_calls["n"] += 1
+        raise AssertionError("mutate must not run on REMOVED drift")
+
+    monkeypatch.setattr(writes_mod, "run_ads_call", boom)
+    monkeypatch.setattr(writes_mod, "get_client", lambda *a, **k: object())
+
+    preview = writes_mod.set_keyword_status(
+        customer_id="1234567890",
+        ad_group_id="10",
+        criterion_id="99",
+        status="PAUSED",
+        dry_run=True,
+    )
+    token = preview["confirm_token"]
+    with pytest.raises(AdsError, match="no longer exists"):
+        writes_mod.set_keyword_status(
+            customer_id="1234567890",
+            ad_group_id="10",
+            criterion_id="99",
+            status="PAUSED",
+            dry_run=False,
+            confirm_token=token,
+        )
+    assert mutate_calls["n"] == 0
+    # Token preserved for retry after drift.
+    with pytest.raises(AdsError, match="no longer exists"):
+        writes_mod.set_keyword_status(
+            customer_id="1234567890",
+            ad_group_id="10",
+            criterion_id="99",
+            status="PAUSED",
+            dry_run=False,
+            confirm_token=token,
+        )
+
+
 def test_get_asset_review_status_is_readonly(monkeypatch) -> None:
     from google_ads_mcp.tools import assets as assets_mod
 
