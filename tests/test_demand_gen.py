@@ -148,6 +148,13 @@ def test_matching_custom_conversion_goal() -> None:
                 "customers/1234567890/conversionActions/100",
             ],
         },
+        {
+            "custom_conversion_goal.resource_name": "customers/1234567890/customConversionGoals/3",
+            "custom_conversion_goal.status": "ENABLED",
+            "custom_conversion_goal.conversion_actions": [
+                "customers/9990001111/conversionActions/99",
+            ],
+        },
     ]
     assert (
         matching_custom_conversion_goal(
@@ -160,6 +167,15 @@ def test_matching_custom_conversion_goal() -> None:
             rows, customer_id="1234567890", conversion_action_ids=["99", "100"]
         )
         is None
+    )
+    # Cross-account resource names must not be rewritten under the campaign customer.
+    assert (
+        matching_custom_conversion_goal(
+            rows,
+            customer_id="1234567890",
+            conversion_action_ids=["customers/9990001111/conversionActions/99"],
+        )
+        == "customers/1234567890/customConversionGoals/3"
     )
 
 

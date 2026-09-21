@@ -78,11 +78,18 @@ def audience_resource(client, customer_id: str, value: str) -> str:
     return client.get_service("AudienceService").audience_path(customer_id, text)
 
 
-def conversion_action_resource(client, customer_id: str, value: str) -> str:
+def normalize_conversion_action_resource(customer_id: str, value: str) -> str:
+    """Preserve full resource names; prefix bare IDs with the campaign customer."""
     text = str(value).strip()
     if text.startswith("customers/"):
         return text
-    return client.get_service("ConversionActionService").conversion_action_path(customer_id, text)
+    cid = clean_customer_id(customer_id)
+    bare = text.rsplit("/", 1)[-1]
+    return f"customers/{cid}/conversionActions/{bare}"
+
+
+def conversion_action_resource(client, customer_id: str, value: str) -> str:
+    return normalize_conversion_action_resource(customer_id, value)
 
 
 def apply_selected_channels(ad_group, channels: list[str]) -> set[str]:
@@ -204,9 +211,8 @@ def matching_custom_conversion_goal(
     conversion_action_ids: list[str],
 ) -> str | None:
     """Return resource_name of an ENABLED goal with the same conversion-action set."""
-    cid = clean_customer_id(customer_id)
     wanted = {
-        f"customers/{cid}/conversionActions/{str(action_id).rsplit('/', 1)[-1]}"
+        normalize_conversion_action_resource(customer_id, action_id)
         for action_id in conversion_action_ids
     }
     for row in rows:
