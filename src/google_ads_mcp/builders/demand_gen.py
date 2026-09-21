@@ -14,8 +14,8 @@ from google_ads_mcp.errors import AdsError
 from google_ads_mcp.ids import clean_customer_id
 from google_ads_mcp.mutate import TempIds, apply_update_mask
 
-STOCKHOLM_GEO_TARGET_ID = "1005184"
-SWEDISH_LANGUAGE_ID = "1010"
+STOCKHOLM_GEO_TARGET_ID = "21000"  # Stockholm County
+SWEDISH_LANGUAGE_ID = "1015"  # Swedish (1010 is Dutch)
 DISPLAY_LIST_THRESHOLD = 100
 DEMAND_GEN_HEADLINE_MAX_CHARS = 40
 DEMAND_GEN_DESCRIPTION_MAX_CHARS = 90
@@ -162,6 +162,7 @@ def build_conversion_goal_operations(
     conversion_action_ids: list[str],
     name: str,
     temps: TempIds | None = None,
+    existing_goal_resource_name: str | None = None,
 ) -> list[Any]:
     if not conversion_action_ids:
         raise AdsError("conversion_action_ids is required.")
@@ -172,24 +173,55 @@ def build_conversion_goal_operations(
     campaign_service = client.get_service("CampaignService")
     operations: list[Any] = []
 
-    goal_op = client.get_type("MutateOperation")
-    goal = goal_op.custom_conversion_goal_operation.create
-    goal.resource_name = goal_service.custom_conversion_goal_path(cid, temps.next())
-    goal.name = name
-    goal.status = client.enums.CustomConversionGoalStatusEnum.ENABLED
-    for action_id in conversion_action_ids:
-        goal.conversion_actions.append(conversion_action_resource(client, cid, action_id))
-    operations.append(goal_op)
+    if existing_goal_resource_name:
+        goal_resource = existing_goal_resource_name
+    else:
+        goal_op = client.get_type("MutateOperation")
+        goal = goal_op.custom_conversion_goal_operation.create
+        goal.resource_name = goal_service.custom_conversion_goal_path(cid, temps.next())
+        goal.name = name
+        goal.status = client.enums.CustomConversionGoalStatusEnum.ENABLED
+        for action_id in conversion_action_ids:
+            goal.conversion_actions.append(conversion_action_resource(client, cid, action_id))
+        operations.append(goal_op)
+        goal_resource = goal.resource_name
 
     config_op = client.get_type("MutateOperation")
     config = config_op.conversion_goal_campaign_config_operation.update
     config.resource_name = config_service.conversion_goal_campaign_config_path(cid, campaign_id)
     config.campaign = campaign_service.campaign_path(cid, campaign_id)
-    config.custom_conversion_goal = goal.resource_name
+    config.custom_conversion_goal = goal_resource
     config.goal_config_level = client.enums.GoalConfigLevelEnum.CAMPAIGN
     apply_update_mask(client, config_op.conversion_goal_campaign_config_operation, config)
     operations.append(config_op)
     return operations
+
+
+def matching_custom_conversion_goal(
+    rows: list[dict[str, Any]],
+    *,
+    customer_id: str,
+    conversion_action_ids: list[str],
+) -> str | None:
+    """Return resource_name of an ENABLED goal with the same conversion-action set."""
+    cid = clean_customer_id(customer_id)
+    wanted = {
+        f"customers/{cid}/conversionActions/{str(action_id).rsplit('/', 1)[-1]}"
+        for action_id in conversion_action_ids
+    }
+    for row in rows:
+        status = str(row.get("custom_conversion_goal.status") or "").upper()
+        if status and status != "ENABLED":
+            continue
+        actions = row.get("custom_conversion_goal.conversion_actions") or []
+        if isinstance(actions, str):
+            actions = [actions]
+        existing = {str(item) for item in actions if item}
+        if existing == wanted:
+            rn = row.get("custom_conversion_goal.resource_name")
+            if rn:
+                return str(rn)
+    return None
 
 
 def _text_asset(client, text: str):
@@ -231,6 +263,7 @@ def build_demand_gen_campaign(
     target_roas: float | None = None,
     conversion_action_ids: list[str] | None = None,
     contains_eu_political: bool = False,
+    existing_conversion_goal_resource_name: str | None = None,
 ) -> list[Any]:
     validate_demand_gen_copy(headlines, descriptions, business_name)
     if not marketing_image_assets or not square_marketing_image_assets or not logo_image_assets:
@@ -276,6 +309,7 @@ def build_demand_gen_campaign(
                 conversion_action_ids=conversion_action_ids,
                 name=f"{name} conversions",
                 temps=temps,
+                existing_goal_resource_name=existing_conversion_goal_resource_name,
             )
         )
 
@@ -448,11 +482,41 @@ def evaluate_demand_gen_readiness(
         approval = ad.get("ad_group_ad.policy_summary.approval_status")
         if approval == "DISAPPROVED":
             failures.append("A Demand Gen ad is disapproved.")
-        headlines = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.headlines") or []
-        marketing = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images") or []
-        square = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.square_marketing_images") or []
-        logos = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.logo_images") or []
-        if not headlines or not marketing or not square or not logos:
+        ad_type = str(ad.get("ad_group_ad.ad.type") or "").upper()
+        if ad_type == "DEMAND_GEN_VIDEO_RESPONSIVE_AD" or (
+            not ad_type and _looks_like_video_responsive(ad)
+        ):
+            if _video_responsive_assets_missing(ad):
+                failures.append("Required Demand Gen video assets are missing.")
+            continue
+        if ad_type in {"DEMAND_GEN_CAROUSEL_AD", "DEMAND_GEN_PRODUCT_AD"}:
+            continue
+        if _multi_asset_assets_missing(ad):
             failures.append("Required Demand Gen assets are missing.")
 
     return {"ready": not failures, "failures": failures, "warnings": warnings}
+
+
+def _looks_like_video_responsive(ad: dict[str, Any]) -> bool:
+    return bool(
+        ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.videos")
+        or ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.headlines")
+        or ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines")
+        or ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.logo_images")
+    )
+
+
+def _multi_asset_assets_missing(ad: dict[str, Any]) -> bool:
+    headlines = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.headlines") or []
+    marketing = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images") or []
+    square = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.square_marketing_images") or []
+    logos = ad.get("ad_group_ad.ad.demand_gen_multi_asset_ad.logo_images") or []
+    return not headlines or not marketing or not square or not logos
+
+
+def _video_responsive_assets_missing(ad: dict[str, Any]) -> bool:
+    headlines = ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.headlines") or []
+    long_headlines = ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines") or []
+    videos = ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.videos") or []
+    logos = ad.get("ad_group_ad.ad.demand_gen_video_responsive_ad.logo_images") or []
+    return (not headlines and not long_headlines) or not videos or not logos
