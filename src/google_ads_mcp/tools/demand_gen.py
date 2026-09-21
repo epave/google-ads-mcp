@@ -12,6 +12,7 @@ from google_ads_mcp.builders.demand_gen import (
     build_conversion_goal_operations,
     build_demand_gen_campaign,
     evaluate_demand_gen_readiness,
+    matching_custom_conversion_goal,
     validate_demand_gen_copy,
 )
 from google_ads_mcp.client import get_client
@@ -43,7 +44,7 @@ def create_demand_gen_campaign(
     channels: list[str] | None = None,
     optimized_targeting_enabled: bool = False,
     bidding_strategy: str = "MAXIMIZE_CLICKS",
-    target_cpc: float | None = 3.0,
+    target_cpc: float | None = None,
     target_cpa: float | None = None,
     target_roas: float | None = None,
     conversion_action_ids: list[str] | None = None,
@@ -56,9 +57,10 @@ def create_demand_gen_campaign(
 
     Does not use the legacy Display builder. Campaign, ad group, and ad stay
     PAUSED. Defaults to Display-only channel controls, optimized targeting off,
-    Stockholm geo (1005184) and Swedish (1010) at the ad group. Pass an Audience
-    id from create_audience. conversion_action_ids become a campaign custom goal
-    (Purchase-only bidding).
+    Stockholm County geo (21000) and Swedish (1015) at the ad group. Maximize
+    Clicks does not set a CPC ceiling unless target_cpc is provided. Pass an
+    Audience id from create_audience. conversion_action_ids become a campaign
+    custom goal (Purchase-only bidding).
     """
     validate_demand_gen_copy(headlines, descriptions, business_name)
     cid = clean_customer_id(customer_id)
@@ -102,6 +104,18 @@ def create_demand_gen_campaign(
     if auth.get("status") == "preview":
         return auth
     client = get_client(login_customer_id)
+    reuse = None
+    if actions:
+        existing = search(
+            cid,
+            "SELECT custom_conversion_goal.resource_name, custom_conversion_goal.status, "
+            "custom_conversion_goal.conversion_actions FROM custom_conversion_goal "
+            "WHERE custom_conversion_goal.status = 'ENABLED'",
+            login_customer_id=login_customer_id,
+        )
+        reuse = matching_custom_conversion_goal(
+            existing, customer_id=cid, conversion_action_ids=actions
+        )
     operations = build_demand_gen_campaign(
         client,
         cid,
@@ -125,6 +139,7 @@ def create_demand_gen_campaign(
         target_roas=target_roas,
         conversion_action_ids=actions or None,
         contains_eu_political=contains_eu_political,
+        existing_conversion_goal_resource_name=reuse,
     )
     result = mutate(cid, operations, client=client)
     get_store().record_audit(
@@ -169,21 +184,32 @@ def set_campaign_conversion_actions(
     if auth.get("status") == "preview":
         return auth
     client = get_client(login_customer_id)
+    existing = search(
+        cid,
+        "SELECT custom_conversion_goal.resource_name, custom_conversion_goal.status, "
+        "custom_conversion_goal.conversion_actions, custom_conversion_goal.name "
+        "FROM custom_conversion_goal WHERE custom_conversion_goal.status = 'ENABLED'",
+        login_customer_id=login_customer_id,
+    )
+    reuse = matching_custom_conversion_goal(
+        existing, customer_id=cid, conversion_action_ids=list(conversion_action_ids)
+    )
     operations = build_conversion_goal_operations(
         client,
         cid,
         campaign_id=str(campaign_id),
         conversion_action_ids=conversion_action_ids,
         name=name or f"Campaign {campaign_id} custom goal",
+        existing_goal_resource_name=reuse,
     )
     result = mutate(cid, operations, client=client)
     get_store().record_audit(
         tool="set_campaign_conversion_actions",
         action="apply",
         customer_id=cid,
-        payload=args,
+        payload={**args, "reused_goal": reuse},
     )
-    return {"status": "applied", **result}
+    return {"status": "applied", "reused_goal": reuse, **result}
 
 
 def get_demand_gen_readiness(
@@ -239,11 +265,15 @@ def get_demand_gen_readiness(
     )
     ads = search(
         cid,
-        "SELECT ad_group_ad.policy_summary.approval_status, "
+        "SELECT ad_group_ad.ad.type, ad_group_ad.policy_summary.approval_status, "
         "ad_group_ad.ad.demand_gen_multi_asset_ad.headlines, "
         "ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images, "
         "ad_group_ad.ad.demand_gen_multi_asset_ad.square_marketing_images, "
-        "ad_group_ad.ad.demand_gen_multi_asset_ad.logo_images "
+        "ad_group_ad.ad.demand_gen_multi_asset_ad.logo_images, "
+        "ad_group_ad.ad.demand_gen_video_responsive_ad.headlines, "
+        "ad_group_ad.ad.demand_gen_video_responsive_ad.long_headlines, "
+        "ad_group_ad.ad.demand_gen_video_responsive_ad.videos, "
+        "ad_group_ad.ad.demand_gen_video_responsive_ad.logo_images "
         f"FROM ad_group_ad WHERE campaign.id = {int(campaign_id)} "
         "AND ad_group_ad.status != 'REMOVED'",
         login_customer_id=login_customer_id,

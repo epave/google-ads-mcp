@@ -5,10 +5,12 @@ import pytest
 from google_ads_mcp.builders.demand_gen import (
     DISPLAY_LIST_THRESHOLD,
     STOCKHOLM_GEO_TARGET_ID,
+    SWEDISH_LANGUAGE_ID,
     build_audience_create,
     build_conversion_goal_operations,
     build_demand_gen_campaign,
     evaluate_demand_gen_readiness,
+    matching_custom_conversion_goal,
     meets_display_threshold,
     validate_demand_gen_copy,
 )
@@ -82,6 +84,15 @@ def test_demand_gen_builder_is_paused_display_only() -> None:
         and op.ad_group_criterion_operation.create.location.geo_target_constant
     ]
     assert geos == [f"geoTargetConstants/{STOCKHOLM_GEO_TARGET_ID}"]
+    langs = [
+        op.ad_group_criterion_operation.create.language.language_constant
+        for op in operations
+        if op._pb.WhichOneof("operation") == "ad_group_criterion_operation"
+        and op.ad_group_criterion_operation.create.language.language_constant
+    ]
+    assert langs == [f"languageConstants/{SWEDISH_LANGUAGE_ID}"]
+    assert STOCKHOLM_GEO_TARGET_ID == "21000"
+    assert SWEDISH_LANGUAGE_ID == "1015"
 
     ad = next(op.ad_group_ad_operation.create for op in operations if op._pb.WhichOneof("operation") == "ad_group_ad_operation")
     assert ad.status == client.enums.AdGroupAdStatusEnum.PAUSED
@@ -99,6 +110,73 @@ def test_demand_gen_builder_is_paused_display_only() -> None:
         if op._pb.WhichOneof("operation") == "conversion_goal_campaign_config_operation"
     )
     assert config.goal_config_level == client.enums.GoalConfigLevelEnum.CAMPAIGN
+
+
+def test_maximize_clicks_default_has_no_cpc_ceiling() -> None:
+    campaign = _ops(target_cpc=None)[1].campaign_operation.create
+    assert [f.name for f, _ in campaign.target_spend._pb.ListFields()] == ["target_spend_micros"]
+
+
+def test_conversion_goal_ops_reuse_existing_goal() -> None:
+    client = fake_ads_client()
+    existing = "customers/1234567890/customConversionGoals/7"
+    operations = build_conversion_goal_operations(
+        client,
+        "1234567890",
+        campaign_id="111",
+        conversion_action_ids=["99"],
+        name="Purchase only",
+        existing_goal_resource_name=existing,
+    )
+    assert len(operations) == 1
+    assert operations[0]._pb.WhichOneof("operation") == "conversion_goal_campaign_config_operation"
+    assert operations[0].conversion_goal_campaign_config_operation.update.custom_conversion_goal == existing
+
+
+def test_matching_custom_conversion_goal() -> None:
+    rows = [
+        {
+            "custom_conversion_goal.resource_name": "customers/1234567890/customConversionGoals/1",
+            "custom_conversion_goal.status": "ENABLED",
+            "custom_conversion_goal.conversion_actions": ["customers/1234567890/conversionActions/99"],
+        },
+        {
+            "custom_conversion_goal.resource_name": "customers/1234567890/customConversionGoals/2",
+            "custom_conversion_goal.status": "REMOVED",
+            "custom_conversion_goal.conversion_actions": [
+                "customers/1234567890/conversionActions/99",
+                "customers/1234567890/conversionActions/100",
+            ],
+        },
+        {
+            "custom_conversion_goal.resource_name": "customers/1234567890/customConversionGoals/3",
+            "custom_conversion_goal.status": "ENABLED",
+            "custom_conversion_goal.conversion_actions": [
+                "customers/9990001111/conversionActions/99",
+            ],
+        },
+    ]
+    assert (
+        matching_custom_conversion_goal(
+            rows, customer_id="1234567890", conversion_action_ids=["99"]
+        )
+        == "customers/1234567890/customConversionGoals/1"
+    )
+    assert (
+        matching_custom_conversion_goal(
+            rows, customer_id="1234567890", conversion_action_ids=["99", "100"]
+        )
+        is None
+    )
+    # Cross-account resource names must not be rewritten under the campaign customer.
+    assert (
+        matching_custom_conversion_goal(
+            rows,
+            customer_id="1234567890",
+            conversion_action_ids=["customers/9990001111/conversionActions/99"],
+        )
+        == "customers/1234567890/customConversionGoals/3"
+    )
 
 
 def test_audience_create_includes_and_excludes_lists() -> None:
@@ -185,6 +263,7 @@ def test_readiness_passes_when_controls_match() -> None:
         ],
         ads=[
             {
+                "ad_group_ad.ad.type": "DEMAND_GEN_MULTI_ASSET_AD",
                 "ad_group_ad.policy_summary.approval_status": "APPROVED",
                 "ad_group_ad.ad.demand_gen_multi_asset_ad.headlines": [{"text": "H1"}],
                 "ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images": [{"asset": "a"}],
@@ -202,6 +281,80 @@ def test_readiness_passes_when_controls_match() -> None:
         purchase_action_ids=["99"],
     )
     assert verdict == {"ready": True, "failures": [], "warnings": []}
+
+
+def test_readiness_accepts_video_responsive_ads() -> None:
+    verdict = evaluate_demand_gen_readiness(
+        campaign={"campaign.advertising_channel_type": "DEMAND_GEN"},
+        ad_groups=[
+            {
+                "ad_group.optimized_targeting_enabled": False,
+                "ad_group.demand_gen_ad_group_settings.channel_controls.channel_config": "SELECTED_CHANNELS",
+                "ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_in_feed": True,
+                "ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_in_stream": True,
+                "ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_shorts": True,
+            }
+        ],
+        criteria=[
+            {"ad_group_criterion.audience.audience": "customers/1/audiences/55", "ad_group_criterion.negative": False},
+            {
+                "ad_group_criterion.location.geo_target_constant": f"geoTargetConstants/{STOCKHOLM_GEO_TARGET_ID}",
+                "ad_group_criterion.negative": False,
+            },
+        ],
+        ads=[
+            {
+                "ad_group_ad.ad.type": "DEMAND_GEN_VIDEO_RESPONSIVE_AD",
+                "ad_group_ad.policy_summary.approval_status": "APPROVED",
+                "ad_group_ad.ad.demand_gen_video_responsive_ad.headlines": [{"text": "H1"}],
+                "ad_group_ad.ad.demand_gen_video_responsive_ad.videos": [{"asset": "vid"}],
+                "ad_group_ad.ad.demand_gen_video_responsive_ad.logo_images": [{"asset": "logo"}],
+            }
+        ],
+        user_lists=[{"user_list.name": "High intent", "user_list.size_for_display": 150, "user_list.eligible_for_display": True}],
+        goal_config={
+            "conversion_goal_campaign_config.goal_config_level": "CAMPAIGN",
+            "custom_conversion_goal.conversion_actions": ["customers/1/conversionActions/99"],
+        },
+        expected_channels=["YOUTUBE"],
+        expected_geo_ids=[STOCKHOLM_GEO_TARGET_ID],
+        purchase_action_ids=["99"],
+    )
+    assert verdict == {"ready": True, "failures": [], "warnings": []}
+
+
+def test_readiness_rejects_incomplete_video_ads() -> None:
+    verdict = evaluate_demand_gen_readiness(
+        campaign={"campaign.advertising_channel_type": "DEMAND_GEN"},
+        ad_groups=[
+            {
+                "ad_group.optimized_targeting_enabled": False,
+                "ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels.youtube_in_feed": True,
+            }
+        ],
+        criteria=[
+            {"ad_group_criterion.audience.audience": "customers/1/audiences/55"},
+            {"ad_group_criterion.location.geo_target_constant": f"geoTargetConstants/{STOCKHOLM_GEO_TARGET_ID}"},
+        ],
+        ads=[
+            {
+                "ad_group_ad.ad.type": "DEMAND_GEN_VIDEO_RESPONSIVE_AD",
+                "ad_group_ad.policy_summary.approval_status": "APPROVED",
+                "ad_group_ad.ad.demand_gen_video_responsive_ad.headlines": [{"text": "H1"}],
+                # missing videos + logos
+            }
+        ],
+        user_lists=[{"user_list.size_for_display": 150, "user_list.eligible_for_display": True}],
+        goal_config={
+            "conversion_goal_campaign_config.goal_config_level": "CAMPAIGN",
+            "custom_conversion_goal.conversion_actions": ["customers/1/conversionActions/99"],
+        },
+        expected_channels=["YOUTUBE"],
+        expected_geo_ids=[STOCKHOLM_GEO_TARGET_ID],
+        purchase_action_ids=["99"],
+    )
+    assert verdict["ready"] is False
+    assert any("video assets" in f for f in verdict["failures"])
 
 
 def test_create_demand_gen_previews(monkeypatch, tmp_path) -> None:
@@ -225,6 +378,8 @@ def test_create_demand_gen_previews(monkeypatch, tmp_path) -> None:
     assert preview["status"] == "preview"
     assert preview["args"]["channels"] == ["DISPLAY"]
     assert preview["args"]["geo_target_constant_ids"] == [STOCKHOLM_GEO_TARGET_ID]
+    assert preview["args"]["language_constant_ids"] == [SWEDISH_LANGUAGE_ID]
+    assert preview["args"]["target_cpc"] is None
 
 
 def test_list_user_lists_shapes_threshold(monkeypatch) -> None:
@@ -282,8 +437,11 @@ def test_get_demand_gen_readiness_uses_evaluator(monkeypatch) -> None:
                 {"ad_group_criterion.location.geo_target_constant": f"geoTargetConstants/{STOCKHOLM_GEO_TARGET_ID}"},
             ]
         if "FROM ad_group_ad" in query:
+            assert "ad_group_ad.ad.type" in query
+            assert "demand_gen_video_responsive_ad.videos" in query
             return [
                 {
+                    "ad_group_ad.ad.type": "DEMAND_GEN_MULTI_ASSET_AD",
                     "ad_group_ad.policy_summary.approval_status": "APPROVED",
                     "ad_group_ad.ad.demand_gen_multi_asset_ad.headlines": [{"text": "H"}],
                     "ad_group_ad.ad.demand_gen_multi_asset_ad.marketing_images": [{"asset": "a"}],
