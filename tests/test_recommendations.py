@@ -4,16 +4,31 @@ from __future__ import annotations
 
 from google_ads_mcp.tools import insights as insights_mod
 
+# Nested paths under MESSAGE fields are not documented as selectable in v25.
+_FORBIDDEN_NESTED = (
+    "keyword_recommendation.keyword.text",
+    "recommended_campaign_callout_assets",
+    "recommended_campaign_sitelink_assets",
+    "impact.base_metrics",
+    "structured_snippet_asset_recommendation",
+)
+
+
+def _assert_v25_selectable_fields(query: str) -> None:
+    assert "recommendation.keyword_recommendation" in query
+    assert "recommendation.impact," in query or "recommendation.impact " in query
+    for bad in _FORBIDDEN_NESTED:
+        assert bad not in query, query
+
 
 def test_get_recommendations_normalized(monkeypatch) -> None:
     queries: list[str] = []
 
     def fake_search(cid, query, login_customer_id=None):
         queries.append(query)
-        assert "recommendation.keyword_recommendation.keyword.text" in query
+        _assert_v25_selectable_fields(query)
         assert "recommendation.campaigns" in query
         assert " OR " not in query
-        assert "structured_snippet_asset_recommendation" not in query
         if "recommendation.campaign =" in query:
             return [
                 {
@@ -21,10 +36,15 @@ def test_get_recommendations_normalized(monkeypatch) -> None:
                     "recommendation.type": "KEYWORD",
                     "recommendation.campaign": "customers/1/campaigns/111",
                     "recommendation.campaigns": [],
-                    "recommendation.keyword_recommendation.keyword.text": "running shoes",
-                    "recommendation.keyword_recommendation.keyword.match_type": "BROAD",
-                    "recommendation.impact.base_metrics.clicks": 10,
-                    "recommendation.impact.potential_metrics.clicks": 20,
+                    "recommendation.keyword_recommendation": {
+                        "keyword": {"text": "running shoes", "match_type": "BROAD"},
+                        "recommended_cpc_bid_micros": "1500000",
+                        "search_terms": [],
+                    },
+                    "recommendation.impact": {
+                        "base_metrics": {"clicks": 10},
+                        "potential_metrics": {"clicks": 20},
+                    },
                 }
             ]
         return []
@@ -38,6 +58,7 @@ def test_get_recommendations_normalized(monkeypatch) -> None:
     rec = result["recommendations"][0]
     assert rec["origin"] == "GOOGLE_API"
     assert rec["details"]["keyword"]["text"] == "running shoes"
+    assert rec["details"]["keyword"]["recommended_cpc_bid_micros"] == 1_500_000
     assert rec["impact"]["potential"]["clicks"] == 20
     assert rec["campaigns"] == ["customers/1/campaigns/111"]
 
@@ -47,6 +68,7 @@ def test_get_recommendations_budget_uses_campaigns(monkeypatch) -> None:
 
     def fake_search(cid, query, login_customer_id=None):
         queries.append(query)
+        _assert_v25_selectable_fields(query)
         assert " OR " not in query
         if "CONTAINS ANY" in query:
             return [
@@ -58,7 +80,10 @@ def test_get_recommendations_budget_uses_campaigns(monkeypatch) -> None:
                         "customers/1/campaigns/111",
                         "customers/1/campaigns/222",
                     ],
-                    "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 9_000_000,
+                    "recommendation.campaign_budget_recommendation": {
+                        "recommended_budget_amount_micros": "9000000",
+                        "budget_options": [],
+                    },
                 }
             ]
         return []
@@ -78,7 +103,7 @@ def test_get_recommendations_budget_uses_campaigns(monkeypatch) -> None:
 
 
 def test_get_recommendations_ignores_unset_budget_on_keyword(monkeypatch) -> None:
-    """Proto-plus defaults unset int64 to 0 — do not invent budget details."""
+    """Budget MESSAGE on a KEYWORD row must not invent budget details."""
 
     def fake_search(cid, query, login_customer_id=None):
         if "recommendation.campaign =" in query:
@@ -88,10 +113,18 @@ def test_get_recommendations_ignores_unset_budget_on_keyword(monkeypatch) -> Non
                     "recommendation.type": "KEYWORD",
                     "recommendation.campaign": "customers/1/campaigns/111",
                     "recommendation.campaigns": [],
-                    "recommendation.keyword_recommendation.keyword.text": "shoes",
-                    "recommendation.keyword_recommendation.keyword.match_type": "BROAD",
-                    "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 0,
-                    "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets": [],
+                    "recommendation.keyword_recommendation": {
+                        "keyword": {"text": "shoes", "match_type": "BROAD"},
+                        "search_terms": [],
+                    },
+                    "recommendation.campaign_budget_recommendation": {
+                        "recommended_budget_amount_micros": "0",
+                        "budget_options": [],
+                    },
+                    "recommendation.callout_asset_recommendation": {
+                        "recommended_campaign_callout_assets": [],
+                        "recommended_customer_callout_assets": [],
+                    },
                 }
             ]
         return []
@@ -111,7 +144,10 @@ def test_get_recommendations_budget_zero_is_kept_for_budget_type(monkeypatch) ->
                 "recommendation.resource_name": "customers/1/recommendations/3",
                 "recommendation.type": "CAMPAIGN_BUDGET",
                 "recommendation.campaign": "customers/1/campaigns/111",
-                "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros": 0,
+                "recommendation.campaign_budget_recommendation": {
+                    "recommended_budget_amount_micros": "0",
+                    "budget_options": [],
+                },
             }
         ]
 

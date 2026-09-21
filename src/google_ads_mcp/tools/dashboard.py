@@ -72,39 +72,59 @@ def get_campaign_dashboard(
         f"{status_filter} ORDER BY campaign.name",
         login_customer_id=login_customer_id,
     )
-    # GAQL rejects a WHERE field that is not also selected
-    # (EXPECTED_REFERENCED_FIELD_IN_SELECT_CLAUSE), especially once segments are present.
+    campaign_ids = [str(int(row["campaign.id"])) for row in catalog if row.get("campaign.id") is not None]
+    if not campaign_ids:
+        payload = {
+            "customer_id": cid,
+            "campaign_count": 0,
+            "totals": {"spend_today": 0, "spend_7d": 0, "clicks_7d": 0, "conversions_7d": 0},
+            "alerts": [],
+            "campaigns": [],
+            "markdown": (
+                "| Campaign | Type | Status | Budget/day | Spend today | Spend 7d | "
+                "Clicks 7d | Conv 7d | CPA 7d |\n"
+                "|---|---|---|---:|---:|---:|---:|---:|---:|"
+            ),
+        }
+        if persist_snapshot:
+            store = get_store()
+            store.save_dashboard_snapshot(cid, payload)
+        return payload
+
+    # Scope secondary queries by catalog IDs so they never filter on campaign.status
+    # without selecting it (EXPECTED_REFERENCED_FIELD_IN_SELECT_CLAUSE).
+    id_filter = "campaign.id IN (" + ", ".join(campaign_ids) + ")"
     today = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, campaign.status, metrics.cost_micros, metrics.clicks, "
+            "SELECT campaign.id, metrics.cost_micros, metrics.clicks, "
             "metrics.impressions, metrics.conversions, metrics.conversions_value FROM campaign "
-            f"WHERE {status_filter} AND segments.date DURING TODAY",
+            f"WHERE {id_filter} AND segments.date DURING TODAY",
             login_customer_id=login_customer_id,
         )
     )
     week = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, campaign.status, metrics.cost_micros, metrics.clicks, "
+            "SELECT campaign.id, metrics.cost_micros, metrics.clicks, "
             "metrics.impressions, metrics.conversions, metrics.conversions_value FROM campaign "
-            f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
+            f"WHERE {id_filter} AND segments.date DURING LAST_7_DAYS",
             login_customer_id=login_customer_id,
         )
     )
     impression_share = _index_by_campaign(
         search(
             cid,
-            "SELECT campaign.id, campaign.status, metrics.search_budget_lost_impression_share, "
+            "SELECT campaign.id, metrics.search_budget_lost_impression_share, "
             "metrics.search_rank_lost_impression_share FROM campaign "
-            f"WHERE {status_filter} AND segments.date DURING LAST_7_DAYS",
+            f"WHERE {id_filter} AND segments.date DURING LAST_7_DAYS",
             login_customer_id=login_customer_id,
         )
     )
     asset_rows = search(
         cid,
-        "SELECT campaign.id, campaign.status, campaign_asset.field_type FROM campaign_asset "
-        f"WHERE {status_filter} "
+        "SELECT campaign.id, campaign_asset.field_type FROM campaign_asset "
+        f"WHERE {id_filter} "
         "AND campaign_asset.status != 'REMOVED' "
         "AND campaign_asset.field_type IN ('CALLOUT', 'STRUCTURED_SNIPPET', 'SITELINK')",
         login_customer_id=login_customer_id,
