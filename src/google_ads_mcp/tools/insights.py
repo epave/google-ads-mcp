@@ -306,26 +306,18 @@ def get_recommendations(
     recommendations may differ or update at different times.
     """
     cid = clean_customer_id(customer_id)
+    # Only select fields documented as selectable in the v25 recommendation
+    # catalog. Nested paths like keyword.text / recommended_*_assets are not
+    # listed; official samples select the parent MESSAGE fields instead.
     select = (
         "SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, "
         "recommendation.campaigns, "
         "recommendation.campaign_budget, recommendation.ad_group, "
-        "recommendation.impact.base_metrics.impressions, "
-        "recommendation.impact.base_metrics.clicks, "
-        "recommendation.impact.base_metrics.cost_micros, "
-        "recommendation.impact.base_metrics.conversions, "
-        "recommendation.impact.base_metrics.conversions_value, "
-        "recommendation.impact.potential_metrics.impressions, "
-        "recommendation.impact.potential_metrics.clicks, "
-        "recommendation.impact.potential_metrics.cost_micros, "
-        "recommendation.impact.potential_metrics.conversions, "
-        "recommendation.impact.potential_metrics.conversions_value, "
-        "recommendation.keyword_recommendation.keyword.text, "
-        "recommendation.keyword_recommendation.keyword.match_type, "
-        "recommendation.keyword_recommendation.recommended_cpc_bid_micros, "
-        "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros, "
-        "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets, "
-        "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets "
+        "recommendation.impact, "
+        "recommendation.keyword_recommendation, "
+        "recommendation.campaign_budget_recommendation, "
+        "recommendation.callout_asset_recommendation, "
+        "recommendation.sitelink_asset_recommendation "
         "FROM recommendation WHERE "
     )
     base_conditions = ["recommendation.dismissed = FALSE"]
@@ -383,60 +375,62 @@ _CALLOUT_ASSET_REC_TYPES = frozenset({"CALLOUT_ASSET"})
 _SITELINK_ASSET_REC_TYPES = frozenset({"SITELINK_ASSET"})
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _impact_metrics(impact: dict[str, Any], key: str) -> dict[str, Any]:
+    metrics = _as_dict(_as_dict(impact).get(key))
+    return {
+        "impressions": metrics.get("impressions"),
+        "clicks": metrics.get("clicks"),
+        "cost_micros": _as_int(metrics.get("cost_micros")),
+        "conversions": metrics.get("conversions"),
+        "conversions_value": metrics.get("conversions_value"),
+    }
+
+
 def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
     rec_type = str(row.get("recommendation.type") or "").upper()
     details: dict[str, Any] = {}
-    if rec_type in _KEYWORD_REC_TYPES and row.get(
-        "recommendation.keyword_recommendation.keyword.text"
-    ):
+
+    keyword_rec = _as_dict(row.get("recommendation.keyword_recommendation"))
+    keyword = _as_dict(keyword_rec.get("keyword"))
+    if rec_type in _KEYWORD_REC_TYPES and keyword.get("text"):
         details["keyword"] = {
-            "text": row.get("recommendation.keyword_recommendation.keyword.text"),
-            "match_type": row.get("recommendation.keyword_recommendation.keyword.match_type"),
-            "recommended_cpc_bid_micros": row.get(
-                "recommendation.keyword_recommendation.recommended_cpc_bid_micros"
+            "text": keyword.get("text"),
+            "match_type": keyword.get("match_type"),
+            "recommended_cpc_bid_micros": _as_int(
+                keyword_rec.get("recommended_cpc_bid_micros")
             ),
         }
+
+    budget_rec = _as_dict(row.get("recommendation.campaign_budget_recommendation"))
     if rec_type in _CAMPAIGN_BUDGET_REC_TYPES:
-        budget = row.get(
-            "recommendation.campaign_budget_recommendation.recommended_budget_amount_micros"
-        )
+        budget = _as_int(budget_rec.get("recommended_budget_amount_micros"))
         if budget is not None:
             details["budget"] = {"recommended_budget_amount_micros": budget}
-    for key, label, types in (
-        (
-            "recommendation.callout_asset_recommendation.recommended_campaign_callout_assets",
-            "callout_assets",
-            _CALLOUT_ASSET_REC_TYPES,
-        ),
-        (
-            "recommendation.sitelink_asset_recommendation.recommended_campaign_sitelink_assets",
-            "sitelink_assets",
-            _SITELINK_ASSET_REC_TYPES,
-        ),
-    ):
-        if rec_type in types and row.get(key) not in (None, [], ""):
-            details[label] = row.get(key)
 
-    impact = {
-        "base": {
-            "impressions": row.get("recommendation.impact.base_metrics.impressions"),
-            "clicks": row.get("recommendation.impact.base_metrics.clicks"),
-            "cost_micros": row.get("recommendation.impact.base_metrics.cost_micros"),
-            "conversions": row.get("recommendation.impact.base_metrics.conversions"),
-            "conversions_value": row.get(
-                "recommendation.impact.base_metrics.conversions_value"
-            ),
-        },
-        "potential": {
-            "impressions": row.get("recommendation.impact.potential_metrics.impressions"),
-            "clicks": row.get("recommendation.impact.potential_metrics.clicks"),
-            "cost_micros": row.get("recommendation.impact.potential_metrics.cost_micros"),
-            "conversions": row.get("recommendation.impact.potential_metrics.conversions"),
-            "conversions_value": row.get(
-                "recommendation.impact.potential_metrics.conversions_value"
-            ),
-        },
-    }
+    callout_rec = _as_dict(row.get("recommendation.callout_asset_recommendation"))
+    callouts = callout_rec.get("recommended_campaign_callout_assets")
+    if rec_type in _CALLOUT_ASSET_REC_TYPES and callouts not in (None, [], ""):
+        details["callout_assets"] = callouts
+
+    sitelink_rec = _as_dict(row.get("recommendation.sitelink_asset_recommendation"))
+    sitelinks = sitelink_rec.get("recommended_campaign_sitelink_assets")
+    if rec_type in _SITELINK_ASSET_REC_TYPES and sitelinks not in (None, [], ""):
+        details["sitelink_assets"] = sitelinks
+
+    impact = _as_dict(row.get("recommendation.impact"))
     return {
         "origin": "GOOGLE_API",
         "type": rec_type,
@@ -445,7 +439,10 @@ def _normalize_recommendation(row: dict[str, Any]) -> dict[str, Any]:
         "ad_group": row.get("recommendation.ad_group"),
         "resource_name": row.get("recommendation.resource_name"),
         "details": details,
-        "impact": impact,
+        "impact": {
+            "base": _impact_metrics(impact, "base_metrics"),
+            "potential": _impact_metrics(impact, "potential_metrics"),
+        },
     }
 
 

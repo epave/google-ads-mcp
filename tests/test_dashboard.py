@@ -4,21 +4,31 @@ from google_ads_mcp.store import reset_store_for_tests
 from google_ads_mcp.tools import dashboard as dashboard_mod
 
 
-def _assert_status_filter_is_selected(query: str) -> None:
-    """Ads API requires a WHERE field to also appear in SELECT."""
-    if "WHERE" not in query or "campaign.status" not in query.split("WHERE", 1)[1]:
+def _assert_dashboard_query_shape(query: str) -> None:
+    """Catalog may filter on status (and must select it). Secondary queries use IDs."""
+    if "FROM customer" in query or "FROM recommendation" in query:
         return
+    where = query.split("WHERE", 1)[1] if "WHERE" in query else ""
     select_clause = query.split("FROM", 1)[0]
-    assert "campaign.status" in select_clause, query
+    if "campaign.status" in where:
+        assert "campaign.status" in select_clause, query
+        assert "campaign_budget.amount_micros" in query  # catalog query
+    else:
+        # Metric / asset follow-ups must not reintroduce a status WHERE.
+        assert "campaign.status" not in where, query
+        if "segments.date" in query or "FROM campaign_asset" in query:
+            assert "campaign.id IN (" in query, query
 
 
 def test_dashboard_markdown_formats_source_micros(monkeypatch, tmp_path: Path) -> None:
     reset_store_for_tests()
     monkeypatch.setenv("GOOGLE_ADS_MCP_DB", str(tmp_path / "state.duckdb"))
     monkeypatch.setenv("GOOGLE_ADS_DISABLE_ENV_FILE", "1")
+    queries: list[str] = []
 
     def fake_search(cid, query, login_customer_id=None):
-        _assert_status_filter_is_selected(query)
+        queries.append(query)
+        _assert_dashboard_query_shape(query)
         if "customer.manager" in query:
             return [
                 {
@@ -68,6 +78,12 @@ def test_dashboard_markdown_formats_source_micros(monkeypatch, tmp_path: Path) -
     payload = dashboard_mod.get_campaign_dashboard("1234567890", persist_snapshot=False)
     assert "12.35" in payload["markdown"]
     assert "2.30" in payload["markdown"]
+    assert any("campaign.id IN (9)" in q for q in queries)
+    assert any(
+        "campaign.status" in q.split("WHERE", 1)[0] and "campaign_budget.amount_micros" in q
+        for q in queries
+        if "WHERE" in q and "FROM campaign " in q
+    )
     dashboard_mod.get_campaign_dashboard(
         "1234567890", include_paused=True, persist_snapshot=False
     )
